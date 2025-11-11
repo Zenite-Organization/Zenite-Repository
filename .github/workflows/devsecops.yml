@@ -117,6 +117,10 @@ jobs:
           docker logs myapp
           exit 1
 
+      env:
+        github_webhook_secret: ${{ secrets.GITHUB_WEBHOOK_SECRET }}
+        ia_api_url: ${{ secrets.IA_API_URL }}
+
       - name: Run OWASP ZAP baseline scan
         uses: zaproxy/action-baseline@v0.9.0
         with:
