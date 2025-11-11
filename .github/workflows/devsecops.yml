@@ -29,9 +29,10 @@ jobs:
 
       - name: Detect Secrets (Gitleaks CLI)
         run: |
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 -o gitleaks
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks-linux-amd64 -o gitleaks
           chmod +x gitleaks
           ./gitleaks detect --source . --no-git --verbose
+
 
 
   ##########################################
