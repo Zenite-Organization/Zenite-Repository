@@ -5,13 +5,5 @@ langgraph
 requests
 httpx
 pydantic
+pydantic-settings
 python-dotenv
-
-
-# ajuste conforme seu provedor LLM e vector store
-# langchain>=0.0.0  # opcional, caso use LangChain
-# langgraph>=0.0.0  # opcional, se usar LangGraph
-# pydantic>=1.10
-# numpy
-# tqdm
-# adicionar SDK do provedor GenAI e driver do vetor (faiss/chroma/lancedb) conforme sua escolha
