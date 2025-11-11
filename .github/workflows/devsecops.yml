@@ -1,0 +1,121 @@
+name: DevSecOps Pipeline (Python)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  ##########################################
+  # 1. SOURCE - Análise Estática (SAST)
+  ##########################################
+  source:
+    name: 🔍 Source Analysis (Semgrep & Gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep (SAST)
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: "p/owasp-top-ten"
+
+      - name: Detect Secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --source . --verbose
+
+  ##########################################
+  # 2. BUILD - Instalação e Escaneamento
+  ##########################################
+  build:
+    name: 🧱 Build & Dependency Scans
+    runs-on: ubuntu-latest
+    needs: source
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Trivy on Dependencies
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
+
+      - name: Build Docker image
+        run: docker build -t myapp:latest .
+
+      - name: Run Trivy on Docker image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'myapp:latest'
+          format: 'table'
+          exit-code: '0'
+          severity: 'HIGH,CRITICAL'
+
+  ##########################################
+  # 3. TEST - Dynamic Security Tests (DAST)
+  ##########################################
+  test:
+    name: 🧪 Security Testing (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      web:
+        image: myapp:latest
+        ports:
+          - 8000:8000
+    steps:
+      - name: Run OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: 'http://localhost:8000'
+
+  ##########################################
+  # 4. RELEASE - Aprovação e Validação
+  ##########################################
+  release:
+    name: 🚀 Release Validation
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://myapp.com
+    steps:
+      - name: Verify release
+        run: echo "✅ All checks passed — release approved."
+
+  ##########################################
+  # 5. DEPLOY - Infraestrutura e Compliance
+  ##########################################
+  deploy:
+    name: ☁️ IaC & Compliance Scan
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov (IaC Scan)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ./infra
+          soft_fail: true
