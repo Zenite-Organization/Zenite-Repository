@@ -32,13 +32,10 @@ jobs:
       #   with:
       #     args: detect --source . --verbose
 
-
-
-
   ##########################################
   # 2. BUILD - Instalação e Escaneamento
   ##########################################
-   build:
+  build:
     name: 🧱 Build & Dependency Scans
     runs-on: ubuntu-latest
     needs: source
