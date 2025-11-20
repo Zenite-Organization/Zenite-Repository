@@ -1,7 +1,7 @@
 # src/agents/correction_agent.py
 from typing import Dict, Any, List
-from src.core.llm_client import LLMClient
-from src.core.prompt_utils import format_similar_issues, build_system_prompt
+from ai.core.llm_client import LLMClient
+from ai.core.prompt_utils import format_similar_issues, build_system_prompt
 
 SYSTEM_ROLE = "Você é um especialista que calcula padrões de erro entre estimativas e tempo real."
 INSTRUCTION = """

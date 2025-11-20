@@ -4,33 +4,20 @@ import math
 
 def combine_estimations(estimations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Combina estimativas usando média ponderada por confiança.
-    estimations: lista de dicts com fields: estimate_hours, confidence, type, justification
-    Retorna: final_estimate_hours, confidence (aggregate), summary
+    Combina todas as estimativas recebidas, retornando a média simples dos campos estimate_hours e confidence,
+    e a justification do primeiro item.
     """
-    # normalizar confidences
-    weighted_sum = 0.0
-    weight_total = 0.0
-    for e in estimations:
-        est = float(e.get("estimate_hours", 0))
-        conf = float(e.get("confidence", 0.5))
-        # garantir limites
-        conf = max(0.01, min(1.0, conf))
-        weighted_sum += est * conf
-        weight_total += conf
-
-    if weight_total <= 0:
-        final = sum([float(e.get("estimate_hours", 0)) for e in estimations]) / max(1, len(estimations))
-        agg_conf = 0.5
-    else:
-        final = weighted_sum / weight_total
-        # agregacao simples de confiança: raiz-mean-square das confidences
-        agg_conf = math.sqrt(sum([e.get("confidence", 0.5)**2 for e in estimations]) / max(1, len(estimations)))
-
-    # build summary
-    lines = []
-    for e in estimations:
-        lines.append(f"- {e.get('type', 'agent')}: {e.get('estimate_hours')}h (conf {e.get('confidence')}) — {e.get('justification','')[:120]}")
-    summary = f"Estimativas combinadas:\n" + "\n".join(lines)
-    summary += f"\n\nDecisão final (média ponderada por confiança): {round(final,1)}h"
-    return {"final_estimate_hours": round(final, 1), "confidence": round(agg_conf, 2), "summary": summary}
+    print("Combining estimations:", estimations)  # Para depuração
+    if not estimations:
+        return {"estimate_hours": 0.0, "confidence": 0.5, "justification": "Nenhuma estimativa disponível."}
+    total_hours = sum(float(e.get("estimate_hours", 0)) for e in estimations)
+    total_conf = sum(float(e.get("confidence", 0.5)) for e in estimations)
+    n = len(estimations)
+    avg_hours = total_hours / n
+    avg_conf = total_conf / n
+    justification = str(estimations[0].get("justification", ""))
+    return {
+        "estimate_hours": round(avg_hours, 2),
+        "confidence": round(avg_conf, 2),
+        "justification": justification
+    }

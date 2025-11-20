@@ -1,20 +1,41 @@
-# src/core/llm_client.py
-from typing import Dict, Any, Optional
+from typing import Optional
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+
 
 class LLMClient:
     """
-    Abstração para chamadas ao seu modelo GenAI.
-    Substitua send_prompt por integração com OpenAI, Google GenAI, Anthropic, etc.
+    Cliente simples para interagir com um LLM via LangChain Google GenAI.
     """
+    def __init__(
+        self,
+        model: str = "gemini-2.5-flash",
+        temperature: float = 0,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+        max_retries: int = 2,
+        api_key: Optional[str] = None,
+        **extra,
+    ):
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if self.api_key:
+            os.environ.setdefault("GEMINI_API_KEY", self.api_key)
 
-    def __init__(self, model_name: str = "gpt-4"):
-        self.model_name = model_name
-        # TODO: inicializar SDK (chaves, config) aqui
+        self.llm = ChatGoogleGenerativeAI(
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=max_retries,
+            **extra,
+        )
 
-    def send_prompt(self, prompt: str, temperature: float = 0.2, max_tokens: int = 512) -> str:
-        """
-        Envia o prompt e retorna o texto bruto da resposta.
-        Substitua o conteúdo deste método para usar a API que você escolher.
-        """
-        # TODO: integrar com a API do provedor
-        raise NotImplementedError("Implemente a ligação com seu provedor de GenAI aqui.")
+    def send_prompt(self, prompt: str, **kwargs) -> str:
+        response = self.llm.invoke(prompt, **kwargs)
+        # Se for AIMessage, pega o conteúdo de texto
+        if hasattr(response, 'content'):
+            return response.content
+        return response

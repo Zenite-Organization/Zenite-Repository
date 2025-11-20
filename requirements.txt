@@ -7,3 +7,4 @@ httpx
 pydantic
 pydantic-settings
 python-dotenv
+langchain-google-genai
