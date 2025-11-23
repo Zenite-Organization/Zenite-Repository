@@ -11,3 +11,5 @@ venv/
 
 # Ignorar arquivos de ambiente
 .env
+# Arquivo contendo chave privada do GitHub App
+private_key.pem
