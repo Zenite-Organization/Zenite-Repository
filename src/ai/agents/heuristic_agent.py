@@ -25,12 +25,9 @@ def run_heuristic(new_issue_text: str, llm: LLMClient) -> Dict[str, Any]:
     prompt += "\n\nResponda apenas com JSON."
 
     resp = llm.send_prompt(prompt, temperature=0.15, max_tokens=300)
-    print("Resposta do LLM:", resp)  # Para depuração
-    # Remove delimitadores de bloco de código markdown, se existirem
+
     if resp.strip().startswith("```"):
-        # Remove primeira linha (```json ou ```)
         lines = resp.strip().splitlines()
-        # Remove linhas que começam e terminam com ```
         lines = [line for line in lines if not line.strip().startswith("```") and not line.strip().endswith("```")]
         resp_clean = "\n".join(lines)
     else:
