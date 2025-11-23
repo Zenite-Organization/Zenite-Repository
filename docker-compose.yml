@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  myapp:
+    build: .
+    container_name: myapp
+    ports:
+      - "8000:8000"
+    environment:
+      github_webhook_secret: "${GITHUB_WEBHOOK_SECRET}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      github_app_id: "${GITHUB_APP_ID}"
+      github_app_private_key: "${GITHUB_APP_PRIVATE_KEY}"
+      github_app_private_key_path: "${GITHUB_APP_PRIVATE_KEY_PATH}"
+    restart: always
