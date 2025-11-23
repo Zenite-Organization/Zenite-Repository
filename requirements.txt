@@ -8,3 +8,5 @@ pydantic
 pydantic-settings
 python-dotenv
 langchain-google-genai
+PyJWT
+cryptography
