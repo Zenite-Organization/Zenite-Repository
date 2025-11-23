@@ -48,26 +48,22 @@ O objetivo é oferecer uma plataforma **extensível e desacoplada**, permitindo 
 ```bash
 src/
 ├── ai/
-│   ├── agents/                # 🤖 Agentes LangGraph (triage, estimation, etc)
-│   ├── memory/                # 🧠 Memória, contexto e estados
-│   └── workflows/             # 🔁 Definições de fluxo (grafo)
+│   ├── agents/                # Agentes LangGraph (triage, estimation, etc)
+│   ├── memory/                # Memória, contexto e estados
+│   └── workflows/             # Definições de fluxo (grafo, run_estimation_flow)
 │
-├── core/
-│   ├── domain/                # 🧩 Entidades e regras puras
-│   │   ├── models/            # Modelos de domínio (Task, Estimate, etc)
-│   │   └── interfaces/        # Contratos e abstrações (repos, services)
-│   └── services/              # ⚙️ Casos de uso (ex: calcular estimativa)
+├── clients/
+│   └── github/
+│       ├── github_auth.py               # JWT + Installation token
+│       ├── github_graphql.py            # requisições GraphQL
+│       └── github_provider.py           # provider principal
 │
-├── infrastructure/
-│   ├── api_clients/           # 🌐 Integrações externas (GraphQL, REST)
-│   ├── repositories/          # 🗄️ Persistência e cache
-│   └── webhook/               # 📨 Handlers de webhooks
+├── web/
+│   ├── schemas/
+│   │   └── github_payload.py                   
+│   └── routes/
+│       └── github_webhook.py         # rota específica do GitHub
 │
-├── entrypoints/
-│   ├── api/                   # 🚪 Aplicação FastAPI
-│   ├── routes/                # 🛣️ Endpoints (webhooks, agents)
-│   └── events/                # ⚡ Consumidores de eventos assíncronos
-│
-├── config/                    # ⚙️ Configurações globais (env, logging)
-├── main.py                    # 🏁 Ponto de entrada FastAPI
-└── requirements.txt           # 📦 Dependências do projeto
+├── config/                    # Configurações globais (env, logging)
+├── main.py
+├── requirements.txt           # Dependências do projeto
