@@ -74,12 +74,12 @@ async def handle_github_issues(
         f"Justificativa: {justification}"
     )
 
-    app_id = settings.github_app_id
-    private_key = settings.github_app_private_key
+    app_id = settings.APP_ID
+    private_key = settings.APP_PRIVATE_KEY
 
-    if not private_key and settings.github_app_private_key_path:
+    if not private_key and settings.APP_PRIVATE_KEY_path:
         try:
-            with open(settings.github_app_private_key_path, "r", encoding="utf-8") as f:
+            with open(settings.APP_PRIVATE_KEY_path, "r", encoding="utf-8") as f:
                 private_key = f.read()
         except Exception:
             private_key = None

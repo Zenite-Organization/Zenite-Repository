@@ -214,6 +214,6 @@ jobs:
             sudo docker run -d --name myapp -p 8000:8000 \
               -e WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET }} \
               -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
-              -e GITHUB_APP_ID=${{ secrets.GITHUB_APP_ID }} \
-              -e github_app_private_key="${{ secrets.GITHUB_APP_PRIVATE_KEY }}" \
+              -e APP_ID=${{ secrets.APP_ID }} \
+              -e APP_PRIVATE_KEY="${{ secrets.APP_PRIVATE_KEY }}" \
               myapp:latest
