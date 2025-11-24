@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    github_webhook_secret: Optional[str] = None
+    WEBHOOK_SECRET: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     github_app_id: Optional[str] = None
     github_app_private_key: Optional[str] = None  # PEM string; alternatively set path and load it in code
