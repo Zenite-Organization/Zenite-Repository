@@ -16,7 +16,7 @@ async def handle_github_issues(
     x_hub_signature_256: str | None = Header(None, alias="X-Hub-Signature-256"),
 ):
     body_bytes = await request.body()
-    secret = settings.github_webhook_secret
+    secret = settings.WEBHOOK_SECRET
     if secret:
         if not x_hub_signature_256:
             raise HTTPException(status_code=401, detail="Missing X-Hub-Signature-256 header")

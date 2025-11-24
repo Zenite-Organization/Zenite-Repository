@@ -92,8 +92,8 @@ jobs:
     needs: build
 
     env:
-      github_webhook_secret: ${{ secrets.GITHUB_WEBHOOK_SECRET }}
-      ia_api_url: ${{ secrets.IA_API_URL }}
+      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - name: Download image artifact
@@ -109,8 +109,8 @@ jobs:
         run: |
           echo "🚀 Iniciando container da aplicação..."
           docker run -d -p 8000:8000 --name myapp \
-            -e github_webhook_secret="${{ secrets.GITHUB_WEBHOOK_SECRET }}" \
-            -e ia_api_url="${{ secrets.IA_API_URL }}" \
+            -e WEBHOOK_SECRET="${{ secrets.WEBHOOK_SECRET }}" \
+            -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
             myapp:latest
 
       - name: Wait for app to be ready
@@ -173,3 +173,47 @@ jobs:
         with:
           directory: ./infra
           soft_fail: true
+
+  ##########################################
+  # 6. DEPLOY TO ORACLE VM
+  ##########################################
+  deploy-prod:
+    name: 🚀 Deploy to Oracle VM
+    runs-on: ubuntu-latest
+    needs: release
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: myapp-image
+          path: .
+
+      - name: Copy image to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_SSH_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || '22' }}
+          source: "myapp.tar"
+          target: "/home/${{ secrets.ORACLE_SSH_USER }}/"
+
+      - name: SSH into VM and deploy image
+        uses: appleboy/ssh-action@v0.1.11
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_SSH_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_SSH_PORT || '22' }}
+          script: |
+            sudo docker load -i /home/${{ secrets.ORACLE_SSH_USER }}/myapp.tar
+            sudo docker stop myapp || true
+            sudo docker rm myapp || true
+            sudo docker run -d --name myapp -p 8000:8000 \
+              -e WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET }} \
+              -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+              -e GITHUB_APP_ID=${{ secrets.GITHUB_APP_ID }} \
+              -e github_app_private_key="${{ secrets.GITHUB_APP_PRIVATE_KEY }}" \
+              myapp:latest
