@@ -201,7 +201,7 @@ jobs:
           target: "/home/${{ secrets.ORACLE_SSH_USER }}/"
 
       - name: SSH into VM and deploy image
-        uses: appleboy/ssh-action@v0.1.11
+        uses: appleboy/ssh-action@v0.1.7
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_SSH_USER }}
