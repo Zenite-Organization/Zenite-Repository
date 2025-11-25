@@ -1,4 +1,4 @@
-name: DevSecOps Pipeline (Python)
+name: DevSecOps Pipeline
 
 on:
   push:
@@ -12,11 +12,13 @@ permissions:
   security-events: write
 
 jobs:
+  # Flow: source -> build -> test -> release -> iac_scan -> deploy_prod
+
   ##########################################
   # 1. SOURCE - Análise Estática (SAST)
   ##########################################
   source:
-    name: 🔍 Source Analysis (Semgrep & Gitleaks)
+    name: Source Analysis (Semgrep & Gitleaks)
     runs-on: ubuntu-latest
 
     steps:
@@ -37,7 +39,7 @@ jobs:
   # 2. BUILD - Instalação e Escaneamento
   ##########################################
   build:
-    name: 🧱 Build & Dependency Scans
+    name: Build & Dependency Scans
     runs-on: ubuntu-latest
     needs: source
 
@@ -87,7 +89,7 @@ jobs:
   ##########################################
 
   test:
-    name: 🧪 Security Testing (OWASP ZAP)
+    name: Security Testing (OWASP ZAP)
     runs-on: ubuntu-latest
     needs: build
 
@@ -107,24 +109,21 @@ jobs:
 
       - name: Start container with environment variables
         run: |
-          echo "🚀 Iniciando container da aplicação..."
           docker run -d -p 8000:8000 --name myapp \
             -e WEBHOOK_SECRET="${{ secrets.WEBHOOK_SECRET }}" \
             -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
             myapp:latest
 
-      - name: Wait for app to be ready
+      - name: Wait for application to be ready
         run: |
-          echo "⏳ Aguardando aplicação iniciar..."
           for i in {1..10}; do
             if curl -s http://localhost:8000 > /dev/null; then
-              echo "✅ Aplicação está respondendo!"
               exit 0
             fi
-            echo "Tentativa $i de 10: app ainda não respondeu"
+            echo "Attempt $i: application not yet responding"
             sleep 5
           done
-          echo "❌ Aplicação não iniciou a tempo"
+          echo "Application did not start in time"
           docker logs myapp
           exit 1
 
@@ -138,7 +137,6 @@ jobs:
       - name: Stop container
         if: always()
         run: |
-          echo "🧹 Encerrando container..."
           docker stop myapp || true
           docker rm myapp || true
 
@@ -147,7 +145,7 @@ jobs:
   # 4. RELEASE - Aprovação e Validação
   ##########################################
   release:
-    name: 🚀 Release Validation
+    name: Release Validation
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main'
@@ -156,13 +154,13 @@ jobs:
       url: https://myapp.com
     steps:
       - name: Verify release
-        run: echo "✅ All checks passed — release approved."
+        run: echo "All checks passed - release approved."
 
   ##########################################
-  # 5. DEPLOY - Infraestrutura e Compliance
+  # 5. IaC & Compliance Scan
   ##########################################
-  deploy:
-    name: ☁️ IaC & Compliance Scan
+  iac_scan:
+    name: IaC & Compliance Scan
     runs-on: ubuntu-latest
     needs: release
     steps:
@@ -175,13 +173,13 @@ jobs:
           soft_fail: true
 
   ##########################################
-  # 6. DEPLOY TO ORACLE VM
+  # 6. DEPLOY TO ORACLE VM (produção)
   ##########################################
-  deploy-prod:
-    name: 🚀 Deploy to Oracle VM
+  deploy_prod:
+    name: Deploy to Oracle VM
     runs-on: ubuntu-latest
-    needs: release
-    if: github.ref == 'refs/heads/main'
+    needs: iac_scan
+    if: ${{ github.ref == 'refs/heads/main' && success() }}
 
     steps:
       - name: Download image artifact
