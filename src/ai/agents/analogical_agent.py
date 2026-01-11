@@ -1,35 +1,83 @@
-# src/agents/analogical_agent.py
 from typing import Dict, Any, List
 from ai.core.llm_client import LLMClient
 from ai.core.prompt_utils import format_similar_issues, build_system_prompt
+import json
 
-SYSTEM_ROLE = "Você é um especialista que estima esforço com base em tarefas históricas semelhantes."
+
+SYSTEM_ROLE = (
+    "Você é um especialista sênior em estimativa de esforço de software, "
+    "capaz de analisar tarefas novas com base em histórico de issues semelhantes."
+)
 
 INSTRUCTION = """
-Você recebeu uma nova tarefa (descricao abaixo) e uma lista de issues historicas similares.
-Calcule uma estimativa em horas baseada na media ponderada dos 'real_hours' das issues similares.
-Retorne um JSON com campos: estimate_hours (float), confidence (0-1), justification (string).
-Se não houver issues similares suficientes, indique confidence baixa (ex: 0.4).
+Você recebeu o contexto completo de uma nova tarefa (issue) e uma lista de issues históricas similares.
+
+Utilize TODAS as informações relevantes do contexto, como:
+- título
+- descrição
+- labels
+- repositório
+- contexto extra (se houver)
+
+Compare a nova tarefa com as issues similares e calcule uma estimativa de esforço em horas,
+priorizando a média ponderada dos campos 'real_hours' das issues históricas.
+
+Retorne APENAS um JSON válido com os campos:
+- estimate_hours (float)
+- confidence (float entre 0 e 1)
+- justification (string)
+
+Regras:
+- Se houver poucas issues similares ou baixa similaridade, reduza a confidence (ex: 0.3 a 0.5)
+- Explique claramente o raciocínio na justification
+- Não inclua texto fora do JSON
 """
 
-def run_analogical(new_issue_text: str, similar_issues: List[Dict[str, Any]], llm: LLMClient) -> Dict[str, Any]:
-    prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
-    prompt += "\n\nNova tarefa:\n" + new_issue_text + "\n\nIssues similares:\n"
-    prompt += format_similar_issues(similar_issues)
+def run_analogical(
+    issue_context: Dict[str, Any],
+    similar_issues: List[Dict[str, Any]],
+    repository_technologies: Dict[str, float],
+    llm: LLMClient
+) -> Dict[str, Any]:
 
-    # Add a deterministic instruction to output only JSON
-    prompt += "\n\nPor favor responda apenas com um JSON válido com os campos: estimate_hours, confidence, justification."
+    system_prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
 
-    response = llm.send_prompt(prompt, temperature=0.0, max_tokens=300)
-    # tentamos parsear JSON da resposta; como fallback, estimamos por média
-    import json
+    issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
+
+    prompt = (
+        system_prompt
+        + "\n\n=== NOVA ISSUE ===\n"
+        + issue_text
+        + "\n\n=== ISSUES HISTÓRICAS SIMILARES ===\n"
+        + format_similar_issues(similar_issues)
+    )
+
+    print("[Analogical Agent] Prompt enviado ao LLM:\n", prompt)
+
+    response = llm.send_prompt(
+        prompt,
+        temperature=0.0,
+        max_tokens=400
+    )
+
+    # limpeza de markdown ```json
+    if response.strip().startswith("```"):
+        lines = response.strip().splitlines()
+        lines = [
+            line for line in lines
+            if not line.strip().startswith("```")
+        ]
+        resp_clean = "\n".join(lines)
+    else:
+        resp_clean = response
+
     try:
-        parsed = json.loads(response)
-        return parsed
-    except Exception:
-        # fallback: calcular média simples
-        reals = [i.get("real_hours") for i in similar_issues if i.get("real_hours") is not None]
-        if reals:
-            avg = sum(reals) / len(reals)
-            return {"estimate_hours": avg, "confidence": 0.6, "justification": "Fallback: média dos real_hours das issues similares."}
-        return {"estimate_hours": 8.0, "confidence": 0.35, "justification": "Fallback: sem similaridades suficientes."}
+        return json.loads(resp_clean)
+    except Exception as e:
+        return {
+            "estimate_hours": 0,
+            "confidence": 0.0,
+            "justification": "Falha ao interpretar resposta do modelo.",
+            "error": str(e),
+            "raw_response": response
+        }

@@ -42,3 +42,25 @@ class GitHubAuth:
             if time.time() < (self.installation_expires_at - 30):
                 return self.installation_token
         return await self.generate_installation_token()
+
+
+def verify_signature(body_bytes: bytes, x_hub_signature_256: str | None):
+    """Verify webhook HMAC signature using WEBHOOK_SECRET from settings.
+    Raises HTTPException on failure.
+    """
+    from fastapi import HTTPException
+    import hmac
+    import hashlib
+    from config.settings import settings
+
+    secret = settings.WEBHOOK_SECRET
+    if not secret:
+        return
+    if not x_hub_signature_256:
+        raise HTTPException(status_code=401, detail="Missing X-Hub-Signature-256 header")
+    try:
+        expected = "sha256=" + hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error computing HMAC")
+    if not hmac.compare_digest(expected, x_hub_signature_256):
+        raise HTTPException(status_code=401, detail="Invalid signature")

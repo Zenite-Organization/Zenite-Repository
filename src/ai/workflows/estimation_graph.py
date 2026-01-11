@@ -1,13 +1,19 @@
-from typing import TypedDict, List, Any, Dict
+from typing import TypedDict, Dict, Any, List, Optional
+from langgraph.graph import StateGraph, START, END
+
+from ai.core.retriever import Retriever
 from ai.agents.analogical_agent import run_analogical
 from ai.agents.heuristic_agent import run_heuristic
-from ai.agents.correction_agent import run_correction
 from ai.agents.supervisor_agent import combine_estimations
-from langgraph.graph import StateGraph, END, START
 from ai.core.llm_client import LLMClient
-# ------------------------------------------------------------
-# Estado compartilhado do grafo
-# ------------------------------------------------------------
+
+from ai.core.mock_clients import MockVectorStoreClient
+# from ai.core.vector_store import VectorStoreClient
+
+from ai.dtos.issues_estimation_dto import IssueEstimationDTO
+
+
+
 class Estimation(TypedDict):
     estimate_hours: float
     confidence: float
@@ -15,23 +21,23 @@ class Estimation(TypedDict):
 
 
 class EstimationState(TypedDict, total=False):
+    issue: Dict[str, Any]
+
     issue_description: str
-    # similar_issues: List[Any]
+    similar_issues: List[Dict[str, Any]]
+    repository_technologies: Dict[str, float]
+
     analogical: Estimation
     heuristic: Estimation
-    correction: Estimation
-
     final_estimation: Dict[str, Any]
 
 
+
 # ------------------------------------------------------------
-# Helpers para padronizar o retorno dos agentes
+# Helpers
 # ------------------------------------------------------------
 
-def normalize_estimation(res: Dict[str, Any]) -> Estimation:
-    """
-    Normaliza a saída de qualquer agente para o formato padrão.
-    """
+def normalize_estimation(res: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "estimate_hours": float(res.get("estimate_hours", 0)),
         "confidence": float(res.get("confidence", 0.5)),
@@ -40,79 +46,122 @@ def normalize_estimation(res: Dict[str, Any]) -> Estimation:
 
 
 # ------------------------------------------------------------
+# Vector Store
+# ------------------------------------------------------------
+
+vector_store = MockVectorStoreClient()
+# vector_store = VectorStoreClient()
+
+
+# ------------------------------------------------------------
 # Nodes
 # ------------------------------------------------------------
 
-# def retriever_node(state: EstimationState) -> EstimationState:
-#     retriever = Retriever()
-#     similar = retriever.search(state["issue_description"])
-#     return {"similar_issues": similar}
+def retriever_node(state: EstimationState) -> EstimationState:
+    retriever = Retriever(vector_store)
+
+    issue = state["issue"]
+    description = issue["description"]  # Fix: use 'description' as per DTO
+
+    similar = retriever.get_similar_issues(description)
+
+    techs = (
+        vector_store.get_repository_technologies()
+        if hasattr(vector_store, "get_repository_technologies")
+        else {}
+    )
+
+    print(f"[Retriever] issues carregadas: {len(similar)}")
+
+    return {
+        "similar_issues": similar,
+        "repository_technologies": techs
+    }
 
 
-# def analogical_node(state: EstimationState) -> EstimationState:
-#     agent = run_analogical()
-#     res = agent.estimate(state["issue_description"], state["similar_issues"])
-#     normalized = normalize_estimation(res)
-#     return {"analogical": normalized}
+def analogical_node(state: EstimationState) -> EstimationState:
+    llm = LLMClient()
+
+    issue = state["issue"]
+
+    res = run_analogical(
+        issue_context=issue,                     # 🔥 TUDO VAI PRA IA
+        similar_issues=state.get("similar_issues", []),
+        repository_technologies=state.get("repository_technologies", {}),
+        llm=llm
+    )
+
+    return {"analogical": normalize_estimation(res)}
 
 
 def heuristic_node(state: EstimationState) -> EstimationState:
     llm = LLMClient()
-    res = run_heuristic(state["issue_description"], llm)
-    normalized = normalize_estimation(res)
-    return {"heuristic": normalized}
 
+    issue = state["issue"]
 
-# def correction_node(state: EstimationState) -> EstimationState:
-#     agent = run_correction()
-#     res = agent.estimate(state["issue_description"], state["similar_issues"])
-#     normalized = normalize_estimation(res)
-#     return {"correction": normalized}
+    res = run_heuristic(
+        issue_context=issue,   
+        llm=llm
+    )
+
+    return {"heuristic": normalize_estimation(res)}
 
 
 def supervisor_node(state: EstimationState) -> EstimationState:
     estimations = []
+
     if "heuristic" in state:
-        estimations.append(state["heuristic"])
+        h = dict(state["heuristic"])
+        h["source"] = "heuristic"
+        estimations.append(h)
+
     if "analogical" in state:
-        estimations.append(state["analogical"])
-    if "correction" in state:
-        estimations.append(state["correction"])
-    final = combine_estimations(estimations)
+        a = dict(state["analogical"])
+        a["source"] = "analogical"
+        estimations.append(a)
+
+    llm = LLMClient()
+
+
+    final = combine_estimations(
+        estimations=estimations,
+        llm=llm
+    )
+
     return {"final_estimation": final}
 
 
 # ------------------------------------------------------------
-# Grafo LangGraph
+# Grafo
 # ------------------------------------------------------------
 
 graph = StateGraph(EstimationState)
 
-
-# graph.add_node("retriever", retriever_node)
-# graph.add_node("analogical_agent", analogical_node)
-graph.add_node("heuristic_agent", heuristic_node)
-# graph.add_node("correction_agent", correction_node)
+graph.add_node("retriever", retriever_node)
+graph.add_node("analogical", analogical_node)
+graph.add_node("heuristic", heuristic_node)
 graph.add_node("supervisor", supervisor_node)
 
-# Edges
-graph.add_edge(START, "heuristic_agent")
-# graph.add_edge("retriever", "analogical_agent")
-# graph.add_edge("retriever", "heuristic_agent")
-# graph.add_edge("retriever", "correction_agent")
-
-# graph.add_edge("analogical_agent", "supervisor")
-graph.add_edge("heuristic_agent", "supervisor")
-# graph.add_edge("correction_agent", "supervisor")
-
+graph.add_edge(START, "retriever")
+graph.add_edge("retriever", "analogical")
+graph.add_edge("retriever", "heuristic")
+graph.add_edge("analogical", "supervisor")
+graph.add_edge("heuristic", "supervisor")
 graph.add_edge("supervisor", END)
 
 estimation_graph = graph.compile()
 
 
 # ------------------------------------------------------------
-# Função pública
+# API pública
 # ------------------------------------------------------------
 
-def run_estimation_flow(issue_description: str) -> EstimationState:
-    return estimation_graph.invoke({"issue_description": issue_description})
+def run_estimation_flow(dto: IssueEstimationDTO) -> EstimationState:
+
+    issue_dict = dto.model_dump()
+
+    initial_state: EstimationState = {
+        "issue": issue_dict,
+    }
+    
+    return estimation_graph.invoke(initial_state)
