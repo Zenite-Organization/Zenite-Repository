@@ -13,3 +13,4 @@ venv/
 .env
 # Arquivo contendo chave privada do GitHub App
 private_key.pem
+private-key.pem

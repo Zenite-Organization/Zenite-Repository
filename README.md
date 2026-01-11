@@ -48,22 +48,27 @@ O objetivo é oferecer uma plataforma **extensível e desacoplada**, permitindo 
 ```bash
 src/
 ├── ai/
-│   ├── agents/                # Agentes LangGraph (triage, estimation, etc)
-│   ├── memory/                # Memória, contexto e estados
-│   └── workflows/             # Definições de fluxo (grafo, run_estimation_flow)
-│
-├── clients/
-│   └── github/
-│       ├── github_auth.py               # JWT + Installation token
-│       ├── github_graphql.py            # requisições GraphQL
-│       └── github_provider.py           # provider principal
+│   ├── dtos/
+│   │   └── issue_estimation_dto.py      # DTO puro
+│   │
+│   ├── agents/
+│   │   ├── heuristic_agent.py
+│   │   ├── llm_estimation_agent.py
+│   │   └── supervisor_agent.py
+│   │
+│   ├── memory/
+│   │   └── estimation_state.py
+│   │
+│   └── workflows/
+│       └── estimation_graph.py
 │
 ├── web/
 │   ├── schemas/
-│   │   └── github_payload.py                   
+│   │   └── github_payload.py            # Pydantic bruto
 │   └── routes/
-│       └── github_webhook.py         # rota específica do GitHub
+│       └── github_webhook.py            # Recebe webhook
 │
-├── config/                    # Configurações globais (env, logging)
-├── main.py
-├── requirements.txt           # Dependências do projeto
+├── clients/
+│   └── github/
+│       └── github_provider.py           # enrichment opcional
+
