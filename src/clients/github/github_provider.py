@@ -1,20 +1,63 @@
 from __future__ import annotations
-from typing import Any, Dict, Optional, List
-import httpx
-import asyncio
-import time
-import datetime
-import jwt
-import os
-from dotenv import load_dotenv
+import datetime as dt
+from typing import Any
+
+from ai.dtos.issues_estimation_dto import IssueEstimationDTO
+from config.settings import settings
+from clients.github.graphql.comments import ADD_COMMENT_MUTATION
+from clients.github.graphql.projects import (
+    FULL_RESOLVE_ISSUE_QUERY,
+    ISSUE_PROJECTS_BY_NODE_QUERY,
+    PROJECT_ISSUES_WITH_FIELDS_QUERY,
+    PROJECT_ITERATION_DURATION_QUERY,
+    PROJECT_ITERATION_FIELD_QUERY,
+    UPDATE_ISSUE_SPRINT_MUTATION,
+    UPDATE_ITEM_FIELD_MUTATION,
+)
 
 from .base import ProjectProvider
 from .github_auth import GitHubAuth
 from .github_graphql import GitHubGraphQL
-import requests
-from config.settings import settings
 
 class GitHubProjectProvider(ProjectProvider):
+    # ------------------------------------------------------
+    # Funções auxiliares para campos customizados
+    # ------------------------------------------------------
+    @staticmethod
+    def extract_custom_fields(item: dict) -> dict:
+        fields = {}
+
+        for node in item.get("fieldValues", {}).get("nodes", []):
+            field = node.get("field")
+            if not field:
+                continue  # 🔥 ignora {}
+
+            field_name = field.get("name")
+            if not field_name:
+                continue
+
+            # SINGLE_SELECT
+            # single select value
+            if "name" in node:
+                fields[field_name] = node["name"]
+                continue
+
+            # iteration value (tem 'iteration' com id e title)
+            if node.get("iteration"):
+                fields[field_name] = node.get("iteration")
+                continue
+
+            # fallback: store the node itself
+            fields[field_name] = node
+
+        return fields
+
+
+    @staticmethod
+    def get_status(custom_fields: dict) -> str | None:
+        return custom_fields.get("Status")
+
+
     def __init__(self, app_id: str, private_key: str, installation_id: int):
         self.auth = GitHubAuth(app_id, private_key, installation_id)
         self.graphql = GitHubGraphQL(self.auth)
@@ -23,101 +66,12 @@ class GitHubProjectProvider(ProjectProvider):
     # ADD COMMENT (usando Node ID)
     # ------------------------------------------------------
     async def add_comment(self, subject_id: str, body: str):
-        mutation = """
-        mutation AddComment($input: AddCommentInput!) {
-            addComment(input: $input) {
-                clientMutationId
-                commentEdge {
-                    node {
-                        id
-                        body
-                        createdAt
-                        author {
-                            login
-                        }
-                    }
-                }
-                subject {
-                    ... on Issue {
-                        id
-                        title
-                        body
-                    }
-                    ... on PullRequest {
-                        id
-                        title
-                        body
-                    }
-                }
-            }
-        }
-        """
-
         variables = {"input": {"subjectId": subject_id, "body": body}}
-        return await self.graphql.query(mutation, variables)
+        return await self.graphql.query(ADD_COMMENT_MUTATION, variables)
 
 
     async def full_resolve_issue(self, issue_node_id: str):
-        query = """
-        query FullResolve($id: ID!) {
-            node(id: $id) {
-                ... on Issue {
-                    id
-                    title
-                    repository {
-                        name
-                        owner {
-                            ... on Organization {
-                                projectsV2(first: 20) {
-                                    nodes {
-                                        id
-                                        title
-                                        fields(first: 50) {
-                                            nodes {
-                                                __typename
-                                                ... on ProjectV2SingleSelectField {
-                                                    id
-                                                    name
-                                                    dataType
-                                                    options {
-                                                        id
-                                                        name
-                                                        color
-                                                    }
-                                                }
-                                                ... on ProjectV2IterationField {
-                                                    id
-                                                    name
-                                                    dataType
-                                                }
-                                                ... on ProjectV2FieldCommon {
-                                                    id
-                                                    name
-                                                    dataType
-                                                }
-                                            }
-                                        }
-                                        items(first: 50) {
-                                            nodes {
-                                                id
-                                                content {
-                                                    ... on Issue {
-                                                        id
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        """
-
-        data = await self.graphql.query(query, {"id": issue_node_id})
+        data = await self.graphql.query(FULL_RESOLVE_ISSUE_QUERY, {"id": issue_node_id})
         node = data.get("data", {}).get("node")
         if not node:
             return {"projects": []}
@@ -179,14 +133,6 @@ class GitHubProjectProvider(ProjectProvider):
                 })
                 continue
 
-            mutation = """
-            mutation UpdateItemField($input: UpdateProjectV2ItemFieldValueInput!) {
-                updateProjectV2ItemFieldValue(input: $input) {
-                    projectV2Item { id }
-                }
-            }
-            """
-
             variables = {
                 "input": {
                     "projectId": project_id,
@@ -197,7 +143,7 @@ class GitHubProjectProvider(ProjectProvider):
             }
 
             try:
-                resp = await self.graphql.query(mutation, variables)
+                resp = await self.graphql.query(UPDATE_ITEM_FIELD_MUTATION, variables)
                 results.append({
                     "project_id": project_id,
                     "item_id": item_id,
@@ -215,232 +161,192 @@ class GitHubProjectProvider(ProjectProvider):
         return {"updated": results}
 
     # ------------------------------------------------------
-    # ASSIGN ITERATION BY NAME (ProjectV2 Iteration field)
-    # ------------------------------------------------------
-    async def assign_iteration_by_name(self, issue_node_id: str, iteration_name: str):
-        """Try to assign an Iteration (ProjectV2) with given name to the issue across projects.
-        If the iteration with that name exists in the project, update the item's iteration field.
-        Returns a list of results per project.
-        """
-        resolved = await self.full_resolve_issue(issue_node_id)
+# LIST BACKLOG ISSUES (GraphQL, paginate)
+# ------------------------------------------------------
+
+    async def list_backlog_issues(
+        self,
+        repo_full_name: str,
+        project_number: int,
+        backlog_status: str = "Backlog",
+    ) -> list:
+        owner, _ = repo_full_name.split("/")
         results = []
+        has_next_page = True
+        cursor = None
 
-        for proj in resolved.get("projects", []):
-            project_id = proj.get("project_id")
-            item_id = proj.get("item_id")
-            # find iteration field id from full_resolve_issue fields if available
-            fields = proj.get("fields") or []
-            iteration_field_id = None
-            # Note: full_resolve_issue currently returns only estimate_field_id and item_id;
-            # but it also fetched fields earlier — fallback to querying project for iteration field below
-            for f in fields:
-                if f.get("__typename") == "ProjectV2IterationField":
-                    iteration_field_id = f.get("id")
-                    break
-
-            # If we don't have item_id or project_id, skip
-            if not project_id or not item_id:
-                results.append({"project_id": project_id, "item_id": item_id, "skipped": True, "reason": "missing project or item id"})
-                continue
-
-            # Query project iterations to find matching title
-            query = """
-            query ProjectIterations($id: ID!) {
-                node(id: $id) {
-                    ... on ProjectV2 {
-                        id
-                        title
-                        iterations(first:100) {
-                            nodes {
-                                id
-                                title
-                            }
-                        }
-                        fields(first:50) {
-                            nodes {
-                                __typename
-                                ... on ProjectV2IterationField { id name dataType }
-                                ... on ProjectV2FieldCommon { id name dataType }
-                            }
-                        }
-                    }
-                }
+        while has_next_page:
+            variables = {
+                "owner": owner,
+                "projectNumber": project_number,
+                "after": cursor,
             }
-            """
 
-            try:
-                data = await self.graphql.query(query, {"id": project_id})
-                node = data.get("data", {}).get("node") or {}
-                proj_node = node
-                iterations = (proj_node.get("iterations", {}).get("nodes") or [])
-                fields_nodes = (proj_node.get("fields", {}).get("nodes") or [])
+            response = await self.graphql.query(
+                PROJECT_ISSUES_WITH_FIELDS_QUERY,
+                variables
+            )
 
-                # find iteration field id if missing
-                if not iteration_field_id:
-                    for f in fields_nodes:
-                        if f.get("__typename") == "ProjectV2IterationField":
-                            iteration_field_id = f.get("id")
-                            break
+            project = (
+                response
+                .get("data", {})
+                .get("organization", {})
+                .get("projectV2", {})
+            )
 
-                found_iter = None
-                for it in iterations:
-                    if str(it.get("title")).strip() == str(iteration_name).strip():
-                        found_iter = it
-                        break
+            items = project.get("items", {})
+            page_info = items.get("pageInfo", {})
+            has_next_page = page_info.get("hasNextPage", False)
+            cursor = page_info.get("endCursor")
 
-                if not found_iter:
-                    results.append({"project_id": project_id, "item_id": item_id, "skipped": True, "reason": "iteration_not_found"})
+            for item in items.get("nodes", []):
+                issue = item.get("content")
+                if not issue:
                     continue
 
-                if not iteration_field_id:
-                    results.append({"project_id": project_id, "item_id": item_id, "skipped": True, "reason": "iteration_field_not_found"})
-                    continue
+                # ---- Custom fields (Status, Iteration, etc)
+                custom_fields = self.extract_custom_fields(item)
+                status = self.get_status(custom_fields)
+                print("status:", status)
 
-                mutation = """
-                mutation UpdateItemField($input: UpdateProjectV2ItemFieldValueInput!) {
-                    updateProjectV2ItemFieldValue(input: $input) {
-                        projectV2Item { id }
-                    }
-                }
-                """
+                # 🔥 FILTRO DE BACKLOG (opcional)
+                # if status != backlog_status:
+                #     continue
 
-                variables = {
-                    "input": {
-                        "projectId": project_id,
-                        "itemId": item_id,
-                        "fieldId": iteration_field_id,
-                        "value": {"iterationId": found_iter.get("id")}
-                    }
-                }
+                labels = [l["name"] for l in issue["labels"]["nodes"]]
+                assignees = [a["login"] for a in issue["assignees"]["nodes"]]
 
-                resp = await self.graphql.query(mutation, variables)
-                results.append({"project_id": project_id, "item_id": item_id, "iteration_id": found_iter.get("id"), "result": resp})
+                created_at = issue.get("createdAt")
+                created_dt = (
+                    dt.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if created_at else None
+                )
 
-            except Exception as e:
-                results.append({"project_id": project_id, "item_id": item_id, "error": str(e)})
+                age_in_days = (
+                    (dt.datetime.now(dt.timezone.utc) - created_dt).days
+                    if created_dt else 0
+                )
 
-        return {"assigned": results}
+                repo = issue["repository"]
 
-    # ------------------------------------------------------
-    # LIST BACKLOG ISSUES (REST, paginate)
-    # ------------------------------------------------------
-    async def list_backlog_issues(self, repo_full_name: str, label: str = "Backlog"):
-        """Return a list of open issues that have the given label.
-        Each item is a dict with at least: node_id, number, title, body, labels, created_at
+                dto = IssueEstimationDTO(
+                    issue_number=issue["number"],
+                    repository=repo["nameWithOwner"],
+                    title=issue.get("title") or "",
+                    description=issue.get("body") or "",
+                    labels=labels,
+                    assignees=assignees,
+                    state=issue.get("state") or "UNKNOWN",
+                    is_open=issue.get("state") == "OPEN",
+                    comments_count=issue["comments"]["totalCount"],
+                    age_in_days=age_in_days,
+                    author_login=issue["author"]["login"] if issue.get("author") else "unknown",
+                    author_role=issue.get("authorAssociation") or "NONE",
+                    repo_language=(
+                        repo["primaryLanguage"]["name"]
+                        if repo.get("primaryLanguage")
+                        else None
+                    ),
+                    repo_size=repo.get("diskUsage"),
+                    is_estimation_issue=any("estimate" in l.lower() for l in labels),
+                    has_assignee=len(assignees) > 0,
+                    has_description=bool(issue.get("body")),
+                )
+
+                results.append(dto)
+
+        return results
+
+
+
+    async def get_project_id(self, issue_node_id: str) -> dict:
+        variables = {"issueId": issue_node_id}
+        response = await self.graphql.query(ISSUE_PROJECTS_BY_NODE_QUERY, variables)
+
+        nodes = (
+            response
+            .get("data", {})
+            .get("node", {})
+            .get("projectItems", {})
+            .get("nodes", [])
+        )
+
+        if not nodes:
+            raise ValueError("Issue não pertence a nenhum Project")
+
+        # Find the oldest project by createdAt
+        def parse_created_at(n):
+            return dt.datetime.fromisoformat(n["createdAt"].replace("Z", "+00:00"))
+
+        oldest = min(nodes, key=parse_created_at)
+        oldest_number = oldest["project"]["number"]
+        oldest_id = oldest["project"]["id"]
+
+        return {"number": oldest_number, "id": oldest_id}
+
+    async def get_project_iterations(self, project_id: str) -> list:
+        variables = {"projectId": project_id}
+        response = await self.graphql.query(PROJECT_ITERATION_DURATION_QUERY, variables)
+
+        fields = (
+            response
+            .get("data", {})
+            .get("node", {})
+            .get("fields", {})
+            .get("nodes", [])
+        )
+
+        iteration_field = next(
+            (f for f in fields if f.get("configuration", {}).get("iterations")),
+            None
+        )
+
+        if not iteration_field:
+            raise ValueError("Project não possui campo Iteration")
+
+        iterations = iteration_field["configuration"]["iterations"]
+
+        return iterations
+
+    async def get_iteration_field(self, project_id: str) -> dict:
+        """Return the iteration field id and the iterations list for a project node id.
+
+        Returns: {"field_id": str|None, "iterations": list}
         """
-        owner, repo = repo_full_name.split("/")
-        per_page = 100
-        page = 1
-        issues: List[Dict[str, Any]] = []
-        token = await self.auth.ensure_token()
-        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
-        async with httpx.AsyncClient() as client:
-            while True:
-                url = f"https://api.github.com/repos/{owner}/{repo}/issues"
-                params = {"state": "open", "labels": label, "per_page": per_page, "page": page}
-                resp = await client.get(url, headers=headers, params=params)
-                if resp.status_code >= 400:
-                    resp.raise_for_status()
-                data = resp.json()
-                if not data:
-                    break
-                for it in data:
-                    issues.append({
-                        "node_id": it.get("node_id"),
-                        "number": it.get("number"),
-                        "title": it.get("title"),
-                        "body": it.get("body"),
-                        "labels": it.get("labels"),
-                        "created_at": it.get("created_at"),
-                    })
-                if len(data) < per_page:
-                    break
-                page += 1
+        variables = {"projectId": project_id}
+        response = await self.graphql.query(PROJECT_ITERATION_FIELD_QUERY, variables)
 
-        return issues
+        fields = (
+            response
+            .get("data", {})
+            .get("node", {})
+            .get("fields", {})
+            .get("nodes", [])
+        )
 
-    # ------------------------------------------------------
-    # GET SPRINT CAPACITY
-    # ------------------------------------------------------
-    async def get_sprint_capacity(self, repo_full_name: str, trigger_label: str | None = None) -> int | None:
-        """Try to determine sprint capacity in hours.
-        Strategies:
-        - parse a duration from trigger_label (e.g., '2w', '1w', '10d')
-        - look for a milestone with title == trigger_label and compute days until due_on
-        - return None if unknown
+        for f in fields:
+            config = f.get("configuration")
+            if config and config.get("iterations") is not None:
+                return {"field_id": f.get("id"), "iterations": config.get("iterations", [])}
+
+        return {"field_id": None, "iterations": []}
+
+
+    async def move_issue_to_sprint(self, project_id: str, item_id: str, field_id: str, iteration_id: str) -> dict:
+        """Execute the GraphQL mutation to set the iteration field value for a project item.
+
+        Expects caller to supply correct `project_id` (node id), `item_id`, `field_id` and
+        `iteration_id` (the iteration id string). Returns the raw GraphQL response.
         """
-        owner, repo = repo_full_name.split("/")
-        token = await self.auth.ensure_token()
-        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        variables = {
+            "projectId": project_id,
+            "itemId": item_id,
+            "fieldId": field_id,
+            "iterationId": iteration_id,
+        }
 
-        # try parse label like '2w' or '10d'
-        if trigger_label:
-            import re
-
-            m = re.search(r"(\d+)\s*(w|d)", trigger_label.lower())
-            if m:
-                n = int(m.group(1))
-                unit = m.group(2)
-                days = n * 7 if unit == "w" else n
-                return days * settings.WORK_HOURS_PER_DAY
-
-            # try parse plain integer as days
-            if trigger_label.strip().isdigit():
-                days = int(trigger_label.strip())
-                return days * settings.WORK_HOURS_PER_DAY
-
-        # fallback: try to find a milestone with title == trigger_label
-        if trigger_label:
-            async with httpx.AsyncClient() as client:
-                url = f"https://api.github.com/repos/{owner}/{repo}/milestones"
-                params = {"state": "open", "per_page": 100}
-                resp = await client.get(url, headers=headers, params=params)
-                if resp.status_code == 200:
-                    for m in resp.json():
-                        if str(m.get("title")) == str(trigger_label):
-                            due_on = m.get("due_on")
-                            if due_on:
-                                try:
-                                    from dateutil.parser import isoparse
-
-                                    dt = isoparse(due_on)
-                                except Exception:
-                                    dt = datetime.datetime.fromisoformat(due_on.replace("Z", "+00:00"))
-                                days = (dt - datetime.datetime.utcnow()).days
-                                if days < 0:
-                                    days = 0
-                                return days * settings.WORK_HOURS_PER_DAY
-
-        return None
-
-    # ------------------------------------------------------
-    # CREATE SPRINT (milestone)
-    # ------------------------------------------------------
-    async def create_sprint(self, repo_full_name: str, title: str, days: int = 14) -> Dict[str, Any]:
-        owner, repo = repo_full_name.split("/")
-        token = await self.auth.ensure_token()
-        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
-        due_date = (datetime.datetime.utcnow() + datetime.timedelta(days=days)).isoformat() + "Z"
-        payload = {"title": title, "due_on": due_date}
-        url = f"https://api.github.com/repos/{owner}/{repo}/milestones"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            return resp.json()
-
-    # ------------------------------------------------------
-    # MOVE ISSUE TO SPRINT (assign milestone)
-    # ------------------------------------------------------
-    async def move_issue_to_sprint(self, issue_number: int, repo_full_name: str, milestone_number: int):
-        owner, repo = repo_full_name.split("/")
-        token = await self.auth.ensure_token()
-        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
-        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
-        payload = {"milestone": milestone_number}
-        async with httpx.AsyncClient() as client:
-            resp = await client.patch(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self.graphql.query(UPDATE_ISSUE_SPRINT_MUTATION, variables)
+        return resp
 
 
 def get_provider_for_installation(installation_id: int) -> GitHubProjectProvider:
@@ -456,4 +362,11 @@ def get_provider_for_installation(installation_id: int) -> GitHubProjectProvider
         except Exception:
             private_key = None
 
-    return GitHubProjectProvider(app_id=app_id, private_key=private_key, installation_id=installation_id)
+    if not app_id or not private_key:
+        raise ValueError("GitHub App credentials are not configured")
+
+    return GitHubProjectProvider(
+        app_id=app_id,
+        private_key=private_key,
+        installation_id=installation_id,
+    )

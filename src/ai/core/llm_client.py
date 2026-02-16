@@ -1,15 +1,15 @@
-from typing import Optional
 import os
-from dotenv import load_dotenv
-load_dotenv()
+from typing import Optional
 
+from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+load_dotenv()
 
 
 class LLMClient:
-    """
-    Cliente simples para interagir com um LLM via LangChain Google GenAI.
-    """
+    """Simple client for LLM calls through LangChain Google GenAI."""
+
     def __init__(
         self,
         model: str = "gemini-2.5-flash",
@@ -34,8 +34,22 @@ class LLMClient:
         )
 
     def send_prompt(self, prompt: str, **kwargs) -> str:
+        prompt_preview = prompt[:180].replace("\n", " ")
+        print(
+            f"[IA][LLM] enviando prompt chars={len(prompt)} kwargs={kwargs} preview={prompt_preview}"
+        )
+
         response = self.llm.invoke(prompt, **kwargs)
-        # Se for AIMessage, pega o conteúdo de texto
-        if hasattr(response, 'content'):
-            return response.content
+        if hasattr(response, "content"):
+            content = response.content
+            resp_preview = str(content)[:180].replace("\n", " ")
+            print(
+                f"[IA][LLM] resposta chars={len(str(content))} preview={resp_preview}"
+            )
+            return content
+
+        resp_preview = str(response)[:180].replace("\n", " ")
+        print(
+            f"[IA][LLM] resposta nao-AIMessage chars={len(str(response))} preview={resp_preview}"
+        )
         return response

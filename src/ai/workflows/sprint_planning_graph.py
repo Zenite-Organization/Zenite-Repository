@@ -1,192 +1,189 @@
 from typing import List, Dict, Any, Optional, TypedDict
-import asyncio
-from datetime import datetime
-
-from clients.github.github_provider import GitHubProjectProvider
+import logging
 from ai.workflows.estimation_graph import run_estimation_flow
-from config.settings import settings
 from ai.core.llm_client import LLMClient
-import json
 from langgraph.graph import StateGraph, END
+from ai.dtos.issues_estimation_dto import IssueEstimationDTO
+from ai.agents.prioritize_agent import run_task_prioritization_for_user
 
 class SprintPlanningState(TypedDict):
+    issue: Dict[str, Any]
     repo_full_name: str
     installation_id: int
     trigger_issue_node_id: str | None
     options: Dict[str, Any]
 
-    backlog: List[dict]
-    enriched: List[dict]
+    backlog: List[IssueEstimationDTO]
     priorities: List[dict]
     estimates: List[dict]
 
     capacity_hours: float
-    selected: List[dict]
 
     sprint_title: str
     moved: List[dict]
-
-async def load_backlog(state: SprintPlanningState):
-    provider = state["provider"]
-    backlog_label = state["options"].get("backlog_label")
-
-    issues = await provider.list_backlog_issues(
-        state["repo_full_name"],
-        backlog_label
-    )
-
-    return {"backlog": issues}
-
-
-def enrich_context(state: SprintPlanningState):
-    enriched = []
-
-    for c in state["backlog"]:
-        enriched.append({
-            **c,
-            "labels": [l.get("name") for l in c.get("labels") or []]
-        })
-
-    return {"enriched": enriched}
+    
+logger = logging.getLogger(__name__)
 
 
 def prioritize_tasks(state: SprintPlanningState):
+
     llm = LLMClient()
 
-    prompt = (
-        "Você é um Product Owner experiente.\n"
-        "Retorne JSON no formato:\n"
-        "[{ task_id, priority, reason, dependencies }]\n\n"
-        "Tarefas:\n"
-    )
+    # Agrupa tarefas por usuário (assignee) a partir do backlog
+    tasks_by_user = {}
+    for t in state.get("backlog", []):
+        # Suporta tanto DTO quanto dict
+        if hasattr(t, "assignees"):
+            assignees = getattr(t, "assignees", []) or []
+            t_dict = t.model_dump() if hasattr(t, "model_dump") else dict(t)
+        else:
+            assignees = t.get("assignees", []) or []
+            t_dict = t
+        # Ignora tarefas sem assignee
+        if not assignees:
+            continue
+        for user in assignees:
+            tasks_by_user.setdefault(user, []).append(t_dict)
 
-    for t in state["enriched"]:
-        prompt += f"- id: {t['node_id']} title: {t['title']} labels: {t['labels']}\n"
+    # Contexto do sprint (issue principal)
+    sprint_context = state.get("issue", {})
 
-    resp = llm.send_prompt(prompt)
-
-    try:
-        priorities = json.loads(resp)
-    except Exception:
-        priorities = []
-
-    return {"priorities": priorities}
+    all_prioritized = []
+    for user, tasks in tasks_by_user.items():
+        result = run_task_prioritization_for_user(user, tasks, llm, sprint_context=sprint_context)
+        # result["tasks"] já está priorizado pelo agente
+        for task in result.get("tasks", []):
+            # Adiciona o campo user para rastreio
+            task["user"] = user
+            all_prioritized.append(task)
+    logger.info("[Sprint Planning] tarefas priorizadas=%s", len(all_prioritized))
+    return {"priorities": all_prioritized}
 
 
 def estimate_tasks(state: SprintPlanningState):
     cache = {}
     estimated = []
 
-    for task in state["enriched"]:
-        key = task.get("node_id")
+    backlog = state.get("backlog", []) or []
+
+    # Cria mapa rápido de possíveis ids -> item do backlog
+    backlog_map: Dict[str, Any] = {}
+    for item in backlog:
+        item_dict = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        candidates = set()
+        if item_dict.get("issue_number") is not None:
+            candidates.add(str(item_dict["issue_number"]))
+            candidates.add(f"ISSUE_{item_dict['issue_number']}")
+        if item_dict.get("node_id"):
+            candidates.add(str(item_dict.get("node_id")))
+        if item_dict.get("id"):
+            candidates.add(str(item_dict.get("id")))
+        for c in candidates:
+            backlog_map[c] = item
+
+    # Para cada tarefa priorizada, encontra o backlog correspondente e estima
+    for p in state.get("priorities", []):
+        task_id = str(p.get("task_id"))
+        orig = backlog_map.get(task_id)
+
+        if not orig:
+            # tentativa de correspondência flexível
+            for k, v in backlog_map.items():
+                if task_id.endswith(str(k)) or str(k).endswith(task_id) or task_id in str(k) or str(k) in task_id:
+                    orig = v
+                    break
+
+        if not orig:
+            continue
+
+        item_dict = orig.model_dump() if hasattr(orig, "model_dump") else dict(orig)
+        key = item_dict.get("issue_number")
+
         if key in cache:
             hours = cache[key]
         else:
-            est_state = run_estimation_flow(task.get("body", ""))
+            est_state = run_estimation_flow(orig)
             hours = float(
                 est_state.get("final_estimation", {}).get("estimate_hours", 0)
             )
             cache[key] = hours
 
-        estimated.append({**task, "estimate_hours": hours})
+        item_dict["estimate_hours"] = hours
+        item_dict["priority"] = p.get("priority")
+        item_dict["priority_reason"] = p.get("reason")
+        estimated.append(item_dict)
 
     return {"estimates": estimated}
 
-async def resolve_capacity(state: SprintPlanningState):
-    provider = state["provider"]
-
-    try:
-        cap = await provider.get_sprint_capacity(
-            state["repo_full_name"],
-            state["options"].get("trigger_label")
-        )
-    except Exception:
-        cap = None
-
-    if not cap:
-        cap = settings.SPRINT_CAPACITY_HOURS
-
-    return {"capacity_hours": cap}
 
 def select_for_sprint(state: SprintPlanningState):
-    prio_map = {
-        p["task_id"]: p for p in state.get("priorities", [])
+
+    PRIORITY_WEIGHT = {
+        "alta": 3,
+        "media": 2,
+        "baixa": 1,
     }
 
     def score(task):
-        p = prio_map.get(task.get("node_id"))
-        if not p:
-            return 1
-        return {"alta": 3, "media": 2, "baixa": 1}.get(
-            p.get("priority", "media"), 2
-        )
+        return PRIORITY_WEIGHT.get(task.get("priority", "media"), 2)
 
+    # Ordena: prioridade desc, depois menor esforço primeiro (melhor packing)
     sorted_tasks = sorted(
-        state["estimates"],
-        key=lambda t: (-score(t), t.get("created_at") or "")
+        state.get("estimates", []),
+        key=lambda t: (-score(t), t.get("estimate_hours", 0))
     )
 
     selected = []
-    used = 0.0
+    used_hours = 0.0
+    capacity = state.get("capacity_hours", 0)
 
     for t in sorted_tasks:
-        if used + t["estimate_hours"] <= state["capacity_hours"]:
+        hours = float(t.get("estimate_hours", 0))
+        if used_hours + hours <= capacity:
             selected.append(t)
-            used += t["estimate_hours"]
-
-    return {"selected": selected}
-
-
-async def assign_iteration(state: SprintPlanningState):
-    provider = state["provider"]
-
-    sprint_title = (
-        state["options"].get("sprint_title")
-        or f"Sprint {datetime.utcnow().isoformat()}"
-    )
-
-    moved = []
-
-    for t in state["selected"]:
-        try:
-            res = await provider.assign_iteration_by_name(
-                t["node_id"],
-                sprint_title
-            )
-            moved.append({
-                "issue": t["number"],
-                "estimate": t["estimate_hours"],
-                "iteration": sprint_title
-            })
-        except Exception as e:
-            moved.append({"issue": t["number"], "error": str(e)})
+            used_hours += hours
 
     return {
-        "sprint_title": sprint_title,
-        "moved": moved
+        "selected": selected,
+        "used_hours": used_hours,
+        "capacity_hours": capacity,
+        "overflow": [
+            t for t in sorted_tasks if t not in selected
+        ],
     }
+
 
 
 
 
 graph = StateGraph(SprintPlanningState)
 
-graph.add_node("load_backlog", load_backlog)
-graph.add_node("enrich_context", enrich_context)
+
+
 graph.add_node("prioritize", prioritize_tasks)
 graph.add_node("estimate", estimate_tasks)
-graph.add_node("resolve_capacity", resolve_capacity)
 graph.add_node("select", select_for_sprint)
-graph.add_node("assign_iteration", assign_iteration)
 
-graph.set_entry_point("load_backlog")
-
-graph.add_edge("load_backlog", "enrich_context")
-graph.add_edge("enrich_context", "prioritize")
+graph.set_entry_point("prioritize")
 graph.add_edge("prioritize", "estimate")
-graph.add_edge("estimate", "resolve_capacity")
-graph.add_edge("resolve_capacity", "select")
-graph.add_edge("select", "assign_iteration")
-graph.add_edge("assign_iteration", END)
+graph.add_edge("estimate", "select")
+graph.add_edge("select", END)
 
 planning_graph = graph.compile()
+
+# ------------------------------------------------------------
+# API pública
+# ------------------------------------------------------------
+
+def run_sprint_planning_flow(dto: IssueEstimationDTO, backlog: Optional[List[Any]] = None, capacity_hours: float = 40.0) -> SprintPlanningState:
+    """Executa o fluxo de planning.
+
+    """
+    issue_dict = dto.model_dump()
+
+    initial_state: SprintPlanningState = {
+        "issue": issue_dict,
+        "backlog": backlog or [],
+        "capacity_hours": capacity_hours,
+    }
+    return planning_graph.invoke(initial_state)

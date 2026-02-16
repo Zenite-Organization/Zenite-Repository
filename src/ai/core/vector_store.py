@@ -1,25 +1,18 @@
-# src/core/vector_store.py
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 
 class VectorStoreClient:
-    """
-    Interface simples para o banco vetorial.
-    Substitua com FAISS / Chroma / LanceDB implementations.
-    """
-
-    def __init__(self):
-        # TODO: inicializar conexão ao vector DB
-        pass
+    """Read-only vector store contract used by RAG retrieval."""
 
     def upsert(self, docs: List[Dict[str, Any]]) -> None:
-        """
-        docs: lista de dicts com fields (id, title, description, metadata...)
-        """
-        raise NotImplementedError
+        # RAG v1 for Zenite is retrieval-only.
+        raise NotImplementedError("This service does not write vectors in RAG v1.")
 
-    def semantic_search(self, text: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Retorna uma lista de issues similares com seus campos (incluindo estimated_hours, real_hours).
-        Cada item deve ser um dict representando a issue.
-        """
+    def semantic_search(
+        self,
+        text: str,
+        namespaces: List[str],
+        top_k: int = 8,
+    ) -> List[Dict[str, Any]]:
+        """Return raw matches from multiple namespaces."""
         raise NotImplementedError
