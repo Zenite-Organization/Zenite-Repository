@@ -1,3 +1,4 @@
+import logging
 from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, START, END
 
@@ -6,9 +7,7 @@ from ai.agents.analogical_agent import run_analogical
 from ai.agents.heuristic_agent import run_heuristic
 from ai.agents.supervisor_agent import combine_estimations
 from ai.core.llm_client import LLMClient
-
-from ai.core.mock_clients import MockVectorStoreClient
-# from ai.core.vector_store import VectorStoreClient
+from ai.core.pinecone_vector_store import PineconeVectorStoreClient
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 
@@ -22,7 +21,6 @@ class Estimation(TypedDict):
 
 class EstimationState(TypedDict, total=False):
     issue: Dict[str, Any]
-
     issue_description: str
     similar_issues: List[Dict[str, Any]]
     repository_technologies: Dict[str, float]
@@ -30,6 +28,9 @@ class EstimationState(TypedDict, total=False):
     analogical: Estimation
     heuristic: Estimation
     final_estimation: Dict[str, Any]
+
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -49,8 +50,7 @@ def normalize_estimation(res: Dict[str, Any]) -> Dict[str, Any]:
 # Vector Store
 # ------------------------------------------------------------
 
-vector_store = MockVectorStoreClient()
-# vector_store = VectorStoreClient()
+vector_store = PineconeVectorStoreClient()
 
 
 # ------------------------------------------------------------
@@ -61,9 +61,7 @@ def retriever_node(state: EstimationState) -> EstimationState:
     retriever = Retriever(vector_store)
 
     issue = state["issue"]
-    description = issue["description"]  # Fix: use 'description' as per DTO
-
-    similar = retriever.get_similar_issues(description)
+    similar = retriever.get_similar_issues(issue)
 
     techs = (
         vector_store.get_repository_technologies()
@@ -71,7 +69,7 @@ def retriever_node(state: EstimationState) -> EstimationState:
         else {}
     )
 
-    print(f"[Retriever] issues carregadas: {len(similar)}")
+    logger.info("[Retriever] issues carregadas=%s", len(similar))
 
     return {
         "similar_issues": similar,
@@ -85,7 +83,7 @@ def analogical_node(state: EstimationState) -> EstimationState:
     issue = state["issue"]
 
     res = run_analogical(
-        issue_context=issue,                     # 🔥 TUDO VAI PRA IA
+        issue_context=issue,               
         similar_issues=state.get("similar_issues", []),
         repository_technologies=state.get("repository_technologies", {}),
         llm=llm

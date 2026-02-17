@@ -1,34 +1,34 @@
-# src/agents/supervisor_agent.py
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 import json
 
 from ai.core.llm_client import LLMClient
+from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
 
 
 SYSTEM_ROLE = (
-    "Você é um supervisor técnico sênior responsável por sintetizar "
-    "estimativas de esforço provenientes de diferentes estratégias."
+    "Voce e um supervisor tecnico senior responsavel por sintetizar "
+    "estimativas de esforco provenientes de diferentes estrategias."
 )
 
 INSTRUCTION = """
-Você receberá:
-- Uma estimativa HEURISTIC (baseline, sem histórico)
-- Uma estimativa ANALOGICAL (baseada em histórico real)
+Voce recebera:
+- Uma estimativa HEURISTIC (baseline, sem historico)
+- Uma estimativa ANALOGICAL (baseada em historico real)
 
-Regras obrigatórias:
-1. A estimativa ANALOGICAL é a principal referência
-2. A HEURISTIC serve como âncora e verificação de sanidade
+Regras obrigatorias:
+1. A estimativa ANALOGICAL e a principal referencia
+2. A HEURISTIC serve como ancora e verificacao de sanidade
 3. Nunca extrapole fora do intervalo definido pelas estimativas recebidas
-4. Se houver forte divergência, reduza a confiança final
-5. Justifique claramente a decisão
+4. Se houver forte divergencia, reduza a confianca final
+5. Justifique claramente a decisao
 
-Retorne APENAS um JSON válido com:
+Retorne APENAS um JSON valido com:
 - estimate_hours (int)
 - confidence (float entre 0 e 1)
 - justification (string curta e objetiva)
 
-Não inclua texto fora do JSON.
+Nao inclua texto fora do JSON.
 """
 
 
@@ -47,26 +47,19 @@ def _compute_final_estimate(
     heuristic: Dict[str, Any],
     analogical: Dict[str, Any]
 ) -> Dict[str, Any]:
-
     h_val = float(heuristic["estimate_hours"])
     a_val = float(analogical["estimate_hours"])
 
     low = min(h_val, a_val)
     high = max(h_val, a_val)
 
-    # Divergência relativa
     divergence = abs(a_val - h_val) / max(h_val, 1)
-
-    # Ponto inicial: analogical
     final_estimate = a_val
 
-    # Se divergência for muito alta, suaviza levemente
     if divergence > 0.6:
         final_estimate = (a_val * 0.7) + (h_val * 0.3)
 
     final_estimate = round(final_estimate)
-
-    # Confiança
     base_conf = (heuristic["confidence"] + analogical["confidence"]) / 2
 
     if divergence < 0.25:
@@ -90,7 +83,6 @@ def refine_with_llm(
     computed: Dict[str, Any],
     llm: LLMClient
 ) -> Dict[str, Any]:
-
     payload = {
         "heuristic": heuristic,
         "analogical": analogical,
@@ -107,17 +99,15 @@ def refine_with_llm(
         max_tokens=300
     )
 
-    # limpeza simples
-    response = response.strip().strip("```json").strip("```")
-
-    return json.loads(response)
+    parsed = parse_llm_json_response(response)
+    print("[IA][SUPERVISOR] retorno llm:", parsed)
+    return parsed
 
 
 def combine_estimations(
     estimations: List[Dict[str, Any]],
     llm: Optional[LLMClient] = None
 ) -> Dict[str, Any]:
-
     parts = _split_estimations(estimations)
 
     heuristic = parts.get("heuristic")
@@ -127,17 +117,22 @@ def combine_estimations(
         raise ValueError("Supervisor requer heuristic e analogical")
 
     computed = _compute_final_estimate(heuristic, analogical)
+    print(
+        "[IA][SUPERVISOR] heuristic=%s analogical=%s computed=%s"
+        % (heuristic, analogical, computed)
+    )
 
     if llm:
         return refine_with_llm(heuristic, analogical, computed, llm)
 
-    # fallback sem LLM
-    return {
+    fallback = {
         "estimate_hours": computed["estimate_hours"],
         "confidence": computed["confidence"],
         "justification": (
-            f"Estimativa baseada principalmente no histórico (analogical), "
-            f"validada por baseline heurístico. "
-            f"Intervalo observado: {computed['bounds'][0]}–{computed['bounds'][1]}h."
+            "Estimativa baseada principalmente no historico (analogical), "
+            "validada por baseline heuristico. "
+            f"Intervalo observado: {computed['bounds'][0]}-{computed['bounds'][1]}h."
         )
     }
+    print("[IA][SUPERVISOR] retorno fallback:", fallback)
+    return fallback

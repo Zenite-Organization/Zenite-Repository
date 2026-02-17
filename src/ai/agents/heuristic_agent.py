@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from ai.core.llm_client import LLMClient
+from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
 import json
 
@@ -69,6 +70,7 @@ def run_heuristic(
     issue_context: Dict[str, Any],
     llm: LLMClient
 ) -> Dict[str, Any]:
+    print("[IA][HEURISTIC] inicio issue=%s" % issue_context.get("issue_number"))
 
     system_prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
 
@@ -80,28 +82,18 @@ def run_heuristic(
         + issue_text
     )
 
-    print("[Heuristic Agent] Prompt enviado ao LLM:\n", prompt)
-
     response = llm.send_prompt(
         prompt,
         temperature=0.0, 
         max_tokens=350
     )
 
-    # limpeza de ```json
-    if response.strip().startswith("```"):
-        lines = response.strip().splitlines()
-        lines = [
-            line for line in lines
-            if not line.strip().startswith("```")
-        ]
-        resp_clean = "\n".join(lines)
-    else:
-        resp_clean = response
-
     try:
-        return json.loads(resp_clean)
+        parsed = parse_llm_json_response(response)
+        print("[IA][HEURISTIC] retorno:", parsed)
+        return parsed
     except Exception as e:
+        print(f"[IA][HEURISTIC] erro parse: {e}")
         return {
             "size": "M",
             "estimate_hours": 8,

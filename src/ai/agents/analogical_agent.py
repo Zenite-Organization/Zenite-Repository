@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from ai.core.llm_client import LLMClient
+from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import format_similar_issues, build_system_prompt
 import json
 
@@ -39,6 +40,10 @@ def run_analogical(
     repository_technologies: Dict[str, float],
     llm: LLMClient
 ) -> Dict[str, Any]:
+    print(
+        "[IA][ANALOGICAL] inicio issue=%s similares=%s"
+        % (issue_context.get("issue_number"), len(similar_issues))
+    )
 
     system_prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
 
@@ -52,7 +57,6 @@ def run_analogical(
         + format_similar_issues(similar_issues)
     )
 
-    print("[Analogical Agent] Prompt enviado ao LLM:\n", prompt)
 
     response = llm.send_prompt(
         prompt,
@@ -60,20 +64,12 @@ def run_analogical(
         max_tokens=400
     )
 
-    # limpeza de markdown ```json
-    if response.strip().startswith("```"):
-        lines = response.strip().splitlines()
-        lines = [
-            line for line in lines
-            if not line.strip().startswith("```")
-        ]
-        resp_clean = "\n".join(lines)
-    else:
-        resp_clean = response
-
     try:
-        return json.loads(resp_clean)
+        parsed = parse_llm_json_response(response)
+        print("[IA][ANALOGICAL] retorno:", parsed)
+        return parsed
     except Exception as e:
+        print(f"[IA][ANALOGICAL] erro parse: {e}")
         return {
             "estimate_hours": 0,
             "confidence": 0.0,
