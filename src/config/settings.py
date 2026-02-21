@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
     RAG_TOPK_PER_NAMESPACE: int = 8
     RAG_MIN_HITS_MAIN: int = 5
+    RAG_MIN_SCORE_MAIN: float = 0.75
+    RAG_MAX_FALLBACK_BASES: int = 3
     RAG_FINAL_CONTEXT_SIZE: int = 10
-    RAG_PRIMARY_PROJECT: str = "mdl"
-    RAG_FALLBACK_PROJECTS: str = "mule,confserver"
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14
@@ -32,4 +32,3 @@ settings = Settings()
 # Backward compatibility for existing env naming.
 if not settings.PINECONE_API_KEY:
     settings.PINECONE_API_KEY = os.getenv("PINECONE_SECRET")
-

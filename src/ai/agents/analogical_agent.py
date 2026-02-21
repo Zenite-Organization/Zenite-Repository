@@ -6,45 +6,41 @@ import json
 
 
 SYSTEM_ROLE = (
-    "Você é um especialista sênior em estimativa de esforço de software, "
-    "capaz de analisar tarefas novas com base em histórico de issues semelhantes."
+    "Voce e um especialista senior em estimativa de esforco de software, "
+    "capaz de analisar tarefas novas com base em historico de issues semelhantes."
 )
 
 INSTRUCTION = """
-Você recebeu o contexto completo de uma nova tarefa (issue) e uma lista de issues históricas similares.
+Voce recebeu o contexto completo de uma nova tarefa (issue) e uma lista de issues historicas similares.
 
-Utilize TODAS as informações relevantes do contexto, como:
-- título
-- descrição
+Utilize TODAS as informacoes relevantes do contexto, como:
+- titulo
+- descricao
 - labels
-- repositório
+- repositorio
 - contexto extra (se houver)
 
-Compare a nova tarefa com as issues similares e calcule uma estimativa de esforço em horas,
-priorizando a média ponderada dos campos 'real_hours' das issues históricas.
+Compare a nova tarefa com as issues similares e calcule uma estimativa de esforco em horas,
+priorizando a comparacao com os campos 'estimated_hours' das issues historicas.
 
-Retorne APENAS um JSON válido com os campos:
+Retorne APENAS um JSON valido com os campos:
 - estimate_hours (float)
 - confidence (float entre 0 e 1)
 - justification (string)
 
 Regras:
 - Se houver poucas issues similares ou baixa similaridade, reduza a confidence (ex: 0.3 a 0.5)
-- Explique claramente o raciocínio na justification
-- Não inclua texto fora do JSON
+- Explique claramente o raciocinio na justification
+- Nao inclua texto fora do JSON
 """
+
 
 def run_analogical(
     issue_context: Dict[str, Any],
     similar_issues: List[Dict[str, Any]],
     repository_technologies: Dict[str, float],
-    llm: LLMClient
+    llm: LLMClient,
 ) -> Dict[str, Any]:
-    print(
-        "[IA][ANALOGICAL] inicio issue=%s similares=%s"
-        % (issue_context.get("issue_number"), len(similar_issues))
-    )
-
     system_prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
 
     issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
@@ -53,20 +49,15 @@ def run_analogical(
         system_prompt
         + "\n\n=== NOVA ISSUE ===\n"
         + issue_text
-        + "\n\n=== ISSUES HISTÓRICAS SIMILARES ===\n"
+        + "\n\n=== ISSUES HISTORICAS SIMILARES ===\n"
         + format_similar_issues(similar_issues)
     )
 
-
-    response = llm.send_prompt(
-        prompt,
-        temperature=0.0,
-        max_tokens=400
-    )
+    print("[IA][ANALOGICAL] prompt:\n%s" % prompt)
+    response = llm.send_prompt(prompt, temperature=0.0, max_tokens=400)
 
     try:
         parsed = parse_llm_json_response(response)
-        print("[IA][ANALOGICAL] retorno:", parsed)
         return parsed
     except Exception as e:
         print(f"[IA][ANALOGICAL] erro parse: {e}")
@@ -75,5 +66,5 @@ def run_analogical(
             "confidence": 0.0,
             "justification": "Falha ao interpretar resposta do modelo.",
             "error": str(e),
-            "raw_response": response
+            "raw_response": response,
         }
