@@ -45,11 +45,8 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
             issue_id = str(issue_id)
 
     estimated_hours = _minutes_to_hours(metadata.get("total_effort_minutes"))
-    real_hours = _minutes_to_hours(metadata.get("resolution_time_minutes"))
-    if real_hours is None:
-        real_hours = _minutes_to_hours(metadata.get("timespent"))
 
-    title = _extract_text(metadata, ["title", "issue_title", "summary"])
+    title = _extract_text(metadata, ["issue_title", "title", "summary"])
     description = _extract_text(
         metadata,
         ["description", "body", "text", "content", "to_string", "from_string"],
@@ -67,7 +64,6 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
         "description": description,
         "snippet": snippet,
         "estimated_hours": estimated_hours,
-        "real_hours": real_hours,
         "score": float(raw.get("score") or 0.0),
         "metadata": metadata,
     }

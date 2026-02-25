@@ -18,16 +18,15 @@ class TestRagNormalizer(unittest.TestCase):
                     "title": "Fix lock",
                     "description": "desc",
                     "total_effort_minutes": 120,
-                    "resolution_time_minutes": 180,
                 },
             }
         )
         self.assertEqual(item["estimated_hours"], 2.0)
-        self.assertEqual(item["real_hours"], 3.0)
+        self.assertNotIn("real_hours", item)
         self.assertEqual(item["doc_type"], "issue")
         self.assertEqual(item["issue_id"], 1)
 
-    def test_real_fallback_to_timespent(self):
+    def test_issue_title_has_priority(self):
         item = normalize_match(
             {
                 "id": "issue:2",
@@ -36,13 +35,15 @@ class TestRagNormalizer(unittest.TestCase):
                 "metadata": {
                     "doc_type": "issue",
                     "issue_id": 2,
-                    "timespent": 90,
+                    "issue_title": "Issue Title Priority",
+                    "title": "Legacy Title",
                     "total_effort_minutes": 60,
                 },
             }
         )
         self.assertEqual(item["estimated_hours"], 1.0)
-        self.assertEqual(item["real_hours"], 1.5)
+        self.assertEqual(item["title"], "Issue Title Priority")
+        self.assertNotIn("real_hours", item)
 
 
 if __name__ == "__main__":

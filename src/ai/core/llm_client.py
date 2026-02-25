@@ -35,21 +35,12 @@ class LLMClient:
 
     def send_prompt(self, prompt: str, **kwargs) -> str:
         prompt_preview = prompt[:180].replace("\n", " ")
-        print(
-            f"[IA][LLM] enviando prompt chars={len(prompt)} kwargs={kwargs} preview={prompt_preview}"
-        )
 
         response = self.llm.invoke(prompt, **kwargs)
         if hasattr(response, "content"):
             content = response.content
             resp_preview = str(content)[:180].replace("\n", " ")
-            print(
-                f"[IA][LLM] resposta chars={len(str(content))} preview={resp_preview}"
-            )
             return content
 
         resp_preview = str(response)[:180].replace("\n", " ")
-        print(
-            f"[IA][LLM] resposta nao-AIMessage chars={len(str(response))} preview={resp_preview}"
-        )
         return response

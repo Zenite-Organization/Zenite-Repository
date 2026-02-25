@@ -54,15 +54,10 @@ class PineconeVectorStoreClient(VectorStoreClient):
         top_k: int = 8,
     ) -> List[Dict[str, Any]]:
         if not self._ready:
-            print("[RAG][Pinecone] cliente nao inicializado, retornando vazio")
             return []
         if not text.strip() or not namespaces:
-            print("[RAG][Pinecone] texto ou namespaces vazios, retornando vazio")
             return []
 
-        print(
-            f"[RAG][Pinecone] buscando namespaces={namespaces} top_k={top_k} query_chars={len(text)}"
-        )
         query_vector = self._embed_query(text)
         all_matches: List[Dict[str, Any]] = []
 
@@ -74,6 +69,7 @@ class PineconeVectorStoreClient(VectorStoreClient):
                     namespace=namespace,
                     include_metadata=True,
                 )
+
                 matches = getattr(response, "matches", None) or response.get("matches", [])
                 for match in matches:
                     if isinstance(match, dict):
@@ -85,11 +81,24 @@ class PineconeVectorStoreClient(VectorStoreClient):
                             "metadata": getattr(match, "metadata", {}) or {},
                         }
                     record["namespace"] = namespace
+                    print(record)
                     all_matches.append(record)
-                print(f"[RAG][Pinecone] namespace={namespace} matches={len(matches)}")
             except Exception as exc:
                 logger.exception("Pinecone query failed for namespace=%s: %s", namespace, exc)
                 print(f"[RAG][Pinecone] erro no namespace={namespace}: {exc}")
 
-        print(f"[RAG][Pinecone] total_matches={len(all_matches)}")
         return all_matches
+
+    def list_namespaces(self) -> List[str]:
+        if not self._ready:
+            return []
+        try:
+            stats = self._index.describe_index_stats()
+            namespaces = getattr(stats, "namespaces", None)
+            if namespaces is None and isinstance(stats, dict):
+                namespaces = stats.get("namespaces", {})
+            if isinstance(namespaces, dict):
+                return list(namespaces.keys())
+        except Exception as exc:
+            logger.exception("Pinecone namespace discovery failed: %s", exc)
+        return []

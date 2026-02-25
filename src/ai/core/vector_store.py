@@ -16,3 +16,7 @@ class VectorStoreClient:
     ) -> List[Dict[str, Any]]:
         """Return raw matches from multiple namespaces."""
         raise NotImplementedError
+
+    def list_namespaces(self) -> List[str]:
+        """Return available namespaces in the backing store."""
+        raise NotImplementedError
