@@ -5,9 +5,10 @@ from langgraph.graph import StateGraph, START, END
 from ai.core.retriever import Retriever
 from ai.agents.analogical_agent import run_analogical
 from ai.agents.heuristic_agent import run_heuristic
-from ai.agents.supervisor_agent import combine_estimations
+from ai.agents.supervisor_agent import combine_heuristic_estimations
 from ai.core.llm_client import LLMClient
 from ai.core.pinecone_vector_store import PineconeVectorStoreClient
+from config.settings import settings
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 
@@ -24,9 +25,13 @@ class EstimationState(TypedDict, total=False):
     issue_description: str
     similar_issues: List[Dict[str, Any]]
     repository_technologies: Dict[str, float]
+    rag_context_sufficient: bool
+    strategy: str
+    rag_stats: Dict[str, Any]
 
     analogical: Estimation
     heuristic: Estimation
+    heuristic_candidates: List[Estimation]
     final_estimation: Dict[str, Any]
 
 
@@ -62,6 +67,20 @@ def retriever_node(state: EstimationState) -> EstimationState:
 
     issue = state["issue"]
     similar = retriever.get_similar_issues(issue)
+    min_score = float(settings.RAG_MIN_SCORE_MAIN)
+    min_hits = int(settings.RAG_MIN_HITS_MAIN)
+
+    qualified_hits = 0
+    for it in similar:
+        try:
+            score = float(it.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score >= min_score:
+            qualified_hits += 1
+
+    rag_context_sufficient = qualified_hits >= min_hits
+    strategy = "analogical" if rag_context_sufficient else "heuristic_ensemble"
 
     techs = (
         vector_store.get_repository_technologies()
@@ -73,7 +92,14 @@ def retriever_node(state: EstimationState) -> EstimationState:
 
     return {
         "similar_issues": similar,
-        "repository_technologies": techs
+        "repository_technologies": techs,
+        "rag_context_sufficient": rag_context_sufficient,
+        "strategy": strategy,
+        "rag_stats": {
+            "qualified_hits": qualified_hits,
+            "min_hits": min_hits,
+            "min_score": min_score,
+        },
     }
 
 
@@ -92,38 +118,62 @@ def analogical_node(state: EstimationState) -> EstimationState:
     return {"analogical": normalize_estimation(res)}
 
 
-def heuristic_node(state: EstimationState) -> EstimationState:
+def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
     llm = LLMClient()
-
     issue = state["issue"]
+    runs = int(settings.HEURISTIC_ENSEMBLE_RUNS)
+    temperature = float(settings.HEURISTIC_ENSEMBLE_TEMPERATURE)
+    candidates: List[Estimation] = []
 
-    res = run_heuristic(
-        issue_context=issue,   
-        llm=llm
-    )
+    for _ in range(runs):
+        res = run_heuristic(
+            issue_context=issue,
+            llm=llm,
+            temperature=temperature,
+        )
+        candidates.append(normalize_estimation(res))
 
-    return {"heuristic": normalize_estimation(res)}
+    return {"heuristic_candidates": candidates}
+
+
+def finalize_analogical_node(state: EstimationState) -> EstimationState:
+    analogical = dict(state.get("analogical") or {})
+    if not analogical:
+        analogical = {
+            "estimate_hours": 0.0,
+            "confidence": 0.0,
+            "justification": "Falha na rota analogical.",
+        }
+    else:
+        justification = str(analogical.get("justification") or "").strip()
+        suffix = "Rota analogical escolhida por contexto RAG suficiente."
+        analogical["justification"] = f"{justification} {suffix}".strip()
+    return {"final_estimation": analogical}
 
 
 def supervisor_node(state: EstimationState) -> EstimationState:
     estimations = []
-
-    if "heuristic" in state:
-        h = dict(state["heuristic"])
-        h["source"] = "heuristic"
+    candidates = state.get("heuristic_candidates", [])
+    for idx, candidate in enumerate(candidates, start=1):
+        h = dict(candidate)
+        h["source"] = f"heuristic_{idx}"
         estimations.append(h)
 
-    if "analogical" in state:
-        a = dict(state["analogical"])
-        a["source"] = "analogical"
-        estimations.append(a)
+    if not estimations:
+        estimations.append(
+            {
+                "source": "heuristic_1",
+                "estimate_hours": 8.0,
+                "confidence": 0.3,
+                "justification": "Fallback por falta de candidatos heurísticos.",
+            }
+        )
 
     llm = LLMClient()
 
-
-    final = combine_estimations(
+    final = combine_heuristic_estimations(
         estimations=estimations,
-        llm=llm
+        llm=llm,
     )
 
     return {"final_estimation": final}
@@ -137,14 +187,27 @@ graph = StateGraph(EstimationState)
 
 graph.add_node("retriever", retriever_node)
 graph.add_node("analogical", analogical_node)
-graph.add_node("heuristic", heuristic_node)
+graph.add_node("heuristic_ensemble", heuristic_ensemble_node)
 graph.add_node("supervisor", supervisor_node)
+graph.add_node("finalize_analogical", finalize_analogical_node)
+
+
+def route_after_retriever(state: EstimationState) -> str:
+    strategy = state.get("strategy", "heuristic_ensemble")
+    return "analogical" if strategy == "analogical" else "heuristic_ensemble"
 
 graph.add_edge(START, "retriever")
-graph.add_edge("retriever", "analogical")
-graph.add_edge("retriever", "heuristic")
-graph.add_edge("analogical", "supervisor")
-graph.add_edge("heuristic", "supervisor")
+graph.add_conditional_edges(
+    "retriever",
+    route_after_retriever,
+    {
+        "analogical": "analogical",
+        "heuristic_ensemble": "heuristic_ensemble",
+    },
+)
+graph.add_edge("analogical", "finalize_analogical")
+graph.add_edge("finalize_analogical", END)
+graph.add_edge("heuristic_ensemble", "supervisor")
 graph.add_edge("supervisor", END)
 
 estimation_graph = graph.compile()

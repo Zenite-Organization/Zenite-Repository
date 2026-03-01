@@ -47,13 +47,12 @@ def run_analogical(
 
     prompt = (
         system_prompt
-        + "\n\n=== NOVA ISSUE ===\n"
+        + "\n\n##NOVA ISSUE\n"
         + issue_text
-        + "\n\n=== ISSUES HISTORICAS SIMILARES ===\n"
+        + "\n\n##ISSUES HISTORICAS SIMILARES\n"
         + format_similar_issues(similar_issues)
     )
-
-    print("[IA][ANALOGICAL] prompt:\n%s" % prompt)
+    print("issues similares formatadas:", similar_issues)
     response = llm.send_prompt(prompt, temperature=0.0, max_tokens=400)
 
     try:

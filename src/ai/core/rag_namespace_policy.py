@@ -1,33 +1,40 @@
 from typing import Any, Dict, List
 
 
-def is_base_namespace(namespace: str) -> bool:
+def is_issue_namespace(namespace: str) -> bool:
     ns = str(namespace or "").strip().lower()
-    return bool(ns) and ("_" not in ns)
+    return bool(ns) and ns.endswith("_issues") and len(ns) > len("_issues")
 
 
 def project_namespaces(project_key: str) -> List[str]:
     base = project_key.strip().lower()
     if not base:
         return []
-    return [base, f"{base}_comments", f"{base}_changelog"]
+    return [f"{base}_issues"]
 
 
-def extract_org_namespace(repository: str) -> str:
+def extract_project_name(repository: str) -> str:
     raw = str(repository or "").strip().lower()
     if not raw:
         return ""
     if "/" in raw:
-        return raw.split("/", 1)[0].strip()
+        return raw.split("/", 1)[1].strip()
     return raw
 
 
-def group_namespaces_by_base(namespaces: List[str]) -> List[str]:
+def extract_project_issue_namespace(repository: str) -> str:
+    project_name = extract_project_name(repository)
+    if not project_name:
+        return ""
+    return f"{project_name}_issues"
+
+
+def group_issue_namespaces(namespaces: List[str]) -> List[str]:
     ordered: List[str] = []
     seen = set()
     for item in namespaces:
         ns = str(item or "").strip().lower()
-        if not is_base_namespace(ns):
+        if not is_issue_namespace(ns):
             continue
         if ns not in seen:
             ordered.append(ns)
