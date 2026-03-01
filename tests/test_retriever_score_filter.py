@@ -5,6 +5,7 @@ from config.settings import settings
 
 
 def _match(namespace: str, idx: int, score: float):
+    project_key = namespace.replace("_issues", "")
     return {
         "id": f"{namespace}:{idx}",
         "namespace": namespace,
@@ -12,8 +13,8 @@ def _match(namespace: str, idx: int, score: float):
         "metadata": {
             "doc_type": "issue",
             "issue_id": idx,
-            "project_key": namespace.upper(),
-            "issue_key": f"{namespace.upper()}-{idx}",
+            "project_key": project_key.upper(),
+            "issue_key": f"{project_key.upper()}-{idx}",
             "issue_title": f"{namespace} issue {idx}",
             "description": "desc",
             "total_effort_minutes": 60,
@@ -50,10 +51,10 @@ class TestRetrieverScoreFilter(unittest.TestCase):
     def test_all_below_threshold_returns_empty(self):
         vs = _FakeVectorStore(
             responses={
-                "timob": [_match("timob", 1, 0.2)],
-                "mule": [_match("mule", 2, 0.5)],
+                "mobile-app_issues": [_match("mobile-app_issues", 1, 0.2)],
+                "mule_issues": [_match("mule_issues", 2, 0.5)],
             },
-            namespaces=["timob", "mule"],
+            namespaces=["mobile-app_issues", "mule_issues"],
         )
         retriever = Retriever(vs)
         result = retriever.get_similar_issues(
@@ -64,10 +65,13 @@ class TestRetrieverScoreFilter(unittest.TestCase):
     def test_mixed_scores_returns_only_qualified(self):
         vs = _FakeVectorStore(
             responses={
-                "timob": [_match("timob", 1, 0.9), _match("timob", 2, 0.2)],
-                "mule": [_match("mule", 3, 0.85), _match("mule", 4, 0.1)],
+                "mobile-app_issues": [
+                    _match("mobile-app_issues", 1, 0.9),
+                    _match("mobile-app_issues", 2, 0.2),
+                ],
+                "mule_issues": [_match("mule_issues", 3, 0.85), _match("mule_issues", 4, 0.1)],
             },
-            namespaces=["timob", "mule"],
+            namespaces=["mobile-app_issues", "mule_issues"],
         )
         retriever = Retriever(vs)
         result = retriever.get_similar_issues(
@@ -83,17 +87,20 @@ class TestRetrieverScoreFilter(unittest.TestCase):
         settings.RAG_FINAL_CONTEXT_SIZE = 5
         vs = _FakeVectorStore(
             responses={
-                "timob": [_match("timob", 1, 0.96), _match("timob", 2, 0.94)],
-                "mule": [_match("mule", 3, 0.92)],
+                "mobile-app_issues": [
+                    _match("mobile-app_issues", 1, 0.96),
+                    _match("mobile-app_issues", 2, 0.94),
+                ],
+                "mule_issues": [_match("mule_issues", 3, 0.92)],
             },
-            namespaces=["timob", "mule"],
+            namespaces=["mobile-app_issues", "mule_issues"],
         )
         retriever = Retriever(vs)
         result = retriever.get_similar_issues(
             {"title": "Issue", "description": "Desc", "repository": "timob/mobile-app"}
         )
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["issue_key"], "TIMOB-1")
+        self.assertEqual(result[0]["issue_key"], "MOBILE-APP-1")
 
 
 if __name__ == "__main__":

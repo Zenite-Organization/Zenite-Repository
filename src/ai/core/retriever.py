@@ -5,8 +5,8 @@ from typing import Any, Dict, List
 from config.settings import settings
 
 from ai.core.rag_namespace_policy import (
-    extract_org_namespace,
-    group_namespaces_by_base,
+    extract_project_issue_namespace,
+    group_issue_namespaces,
 )
 from ai.core.rag_normalizer import normalize_match
 from ai.core.rag_ranker import join_issue_context
@@ -84,26 +84,26 @@ class Retriever:
         top_k = top_k or settings.RAG_TOPK_PER_NAMESPACE
         min_score = settings.RAG_MIN_SCORE_MAIN
         max_fallback_bases = settings.RAG_MAX_FALLBACK_BASES
-        primary_base = extract_org_namespace(issue_payload.get("repository") or "")
-        namespace_order: List[str] = [primary_base] if primary_base else []
+        primary_namespace = extract_project_issue_namespace(issue_payload.get("repository") or "")
+        namespace_order: List[str] = [primary_namespace] if primary_namespace else []
 
         queried_namespaces: List[str] = []
-        fallback_bases_tried: List[str] = []
-        discovered_bases: List[str] = []
+        fallback_namespaces_tried: List[str] = []
+        discovered_issue_namespaces: List[str] = []
         if hasattr(self.vs, "list_namespaces"):
             try:
                 discovered = self.vs.list_namespaces()
             except Exception:
                 discovered = []
-            discovered_bases = group_namespaces_by_base(discovered)
-            for base in discovered_bases:
-                if base == primary_base:
+            discovered_issue_namespaces = group_issue_namespaces(discovered)
+            for namespace in discovered_issue_namespaces:
+                if namespace == primary_namespace:
                     continue
-                if len(fallback_bases_tried) >= max_fallback_bases:
+                if len(fallback_namespaces_tried) >= max_fallback_bases:
                     break
-                namespace_order.append(base)
-                fallback_bases_tried.append(base)
-
+                namespace_order.append(namespace)
+                fallback_namespaces_tried.append(namespace)
+        print(discovered_issue_namespaces, namespace_order)
         all_raw_matches: List[Dict[str, Any]] = []
         qualified_raw_matches: List[Dict[str, Any]] = []
         seen_keys = set()
@@ -137,8 +137,9 @@ class Retriever:
 
         if (
             stop_reason != "filled_target"
-            and len(fallback_bases_tried) >= max_fallback_bases
-            and len(discovered_bases) > len(fallback_bases_tried) + (1 if primary_base else 0)
+            and len(fallback_namespaces_tried) >= max_fallback_bases
+            and len(discovered_issue_namespaces)
+            > len(fallback_namespaces_tried) + (1 if primary_namespace else 0)
         ):
             stop_reason = "fallback_cap_reached"
 
@@ -156,12 +157,12 @@ class Retriever:
 
         mix = Counter(item.get("doc_type") for item in context)
         logger.info(
-            "[RAG] primary_base=%s target_size=%s qualified_collected=%s namespaces_queried=%s fallback_bases_tried=%s filtered_out_low_score_total=%s stop_reason=%s total_raw=%s final_context=%s best_score=%.4f mix=%s",
-            primary_base,
+            "[RAG] primary_namespace=%s target_size=%s qualified_collected=%s namespaces_queried=%s fallback_namespaces_tried=%s filtered_out_low_score_total=%s stop_reason=%s total_raw=%s final_context=%s best_score=%.4f mix=%s",
+            primary_namespace,
             target_size,
             len(qualified_raw_matches),
             queried_namespaces,
-            fallback_bases_tried,
+            fallback_namespaces_tried,
             filtered_out_low_score_total,
             stop_reason,
             len(all_raw_matches),

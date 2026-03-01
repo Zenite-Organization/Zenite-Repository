@@ -96,6 +96,25 @@ jobs:
     env:
       WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      APP_PRIVATE_KEY_path: ${{ vars.APP_PRIVATE_KEY_PATH }}
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      PINECONE_INDEX_NAME: ${{ vars.PINECONE_INDEX_NAME }}
+      OPENAI_API_KEY_RAG: ${{ secrets.OPENAI_API_KEY_RAG }}
+      RAG_EMBEDDING_MODEL: ${{ vars.RAG_EMBEDDING_MODEL || 'text-embedding-3-small' }}
+      RAG_TOPK_PER_NAMESPACE: ${{ vars.RAG_TOPK_PER_NAMESPACE || '8' }}
+      RAG_MIN_HITS_MAIN: ${{ vars.RAG_MIN_HITS_MAIN || '5' }}
+      RAG_MIN_SCORE_MAIN: ${{ vars.RAG_MIN_SCORE_MAIN || '0.75' }}
+      RAG_MAX_FALLBACK_BASES: ${{ vars.RAG_MAX_FALLBACK_BASES || '15' }}
+      RAG_FINAL_CONTEXT_SIZE: ${{ vars.RAG_FINAL_CONTEXT_SIZE || '10' }}
+      HEURISTIC_ENSEMBLE_RUNS: ${{ vars.HEURISTIC_ENSEMBLE_RUNS || '3' }}
+      HEURISTIC_ENSEMBLE_TEMPERATURE: ${{ vars.HEURISTIC_ENSEMBLE_TEMPERATURE || '0.6' }}
+      WORK_HOURS_PER_DAY: ${{ vars.WORK_HOURS_PER_DAY || '8' }}
+      SPRINT_DEFAULT_DAYS: ${{ vars.SPRINT_DEFAULT_DAYS || '14' }}
+      SPRINT_CAPACITY_HOURS: ${{ vars.SPRINT_CAPACITY_HOURS }}
+      PLANNING_TRIGGER_LABEL: ${{ vars.PLANNING_TRIGGER_LABEL || 'planning' }}
+      SPRINT_BACKLOG_LABEL: ${{ vars.SPRINT_BACKLOG_LABEL || 'Backlog' }}
 
     steps:
       - name: Download image artifact
@@ -110,8 +129,27 @@ jobs:
       - name: Start container with environment variables
         run: |
           docker run -d -p 8000:8000 --name myapp \
-            -e WEBHOOK_SECRET="${{ secrets.WEBHOOK_SECRET }}" \
-            -e GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+            -e WEBHOOK_SECRET \
+            -e GEMINI_API_KEY \
+            -e APP_ID \
+            -e APP_PRIVATE_KEY \
+            -e APP_PRIVATE_KEY_path \
+            -e PINECONE_API_KEY \
+            -e PINECONE_INDEX_NAME \
+            -e OPENAI_API_KEY_RAG \
+            -e RAG_EMBEDDING_MODEL \
+            -e RAG_TOPK_PER_NAMESPACE \
+            -e RAG_MIN_HITS_MAIN \
+            -e RAG_MIN_SCORE_MAIN \
+            -e RAG_MAX_FALLBACK_BASES \
+            -e RAG_FINAL_CONTEXT_SIZE \
+            -e HEURISTIC_ENSEMBLE_RUNS \
+            -e HEURISTIC_ENSEMBLE_TEMPERATURE \
+            -e WORK_HOURS_PER_DAY \
+            -e SPRINT_DEFAULT_DAYS \
+            -e SPRINT_CAPACITY_HOURS \
+            -e PLANNING_TRIGGER_LABEL \
+            -e SPRINT_BACKLOG_LABEL \
             myapp:latest
 
       - name: Wait for application to be ready
@@ -214,4 +252,21 @@ jobs:
               -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
               -e APP_ID=${{ secrets.APP_ID }} \
               -e APP_PRIVATE_KEY="${{ secrets.APP_PRIVATE_KEY }}" \
+              -e APP_PRIVATE_KEY_path="${{ vars.APP_PRIVATE_KEY_PATH }}" \
+              -e PINECONE_API_KEY="${{ secrets.PINECONE_API_KEY }}" \
+              -e PINECONE_INDEX_NAME="${{ vars.PINECONE_INDEX_NAME }}" \
+              -e OPENAI_API_KEY_RAG="${{ secrets.OPENAI_API_KEY_RAG }}" \
+              -e RAG_EMBEDDING_MODEL="${{ vars.RAG_EMBEDDING_MODEL || 'text-embedding-3-small' }}" \
+              -e RAG_TOPK_PER_NAMESPACE="${{ vars.RAG_TOPK_PER_NAMESPACE || '8' }}" \
+              -e RAG_MIN_HITS_MAIN="${{ vars.RAG_MIN_HITS_MAIN || '5' }}" \
+              -e RAG_MIN_SCORE_MAIN="${{ vars.RAG_MIN_SCORE_MAIN || '0.75' }}" \
+              -e RAG_MAX_FALLBACK_BASES="${{ vars.RAG_MAX_FALLBACK_BASES || '15' }}" \
+              -e RAG_FINAL_CONTEXT_SIZE="${{ vars.RAG_FINAL_CONTEXT_SIZE || '10' }}" \
+              -e HEURISTIC_ENSEMBLE_RUNS="${{ vars.HEURISTIC_ENSEMBLE_RUNS || '3' }}" \
+              -e HEURISTIC_ENSEMBLE_TEMPERATURE="${{ vars.HEURISTIC_ENSEMBLE_TEMPERATURE || '0.6' }}" \
+              -e WORK_HOURS_PER_DAY="${{ vars.WORK_HOURS_PER_DAY || '8' }}" \
+              -e SPRINT_DEFAULT_DAYS="${{ vars.SPRINT_DEFAULT_DAYS || '14' }}" \
+              -e SPRINT_CAPACITY_HOURS="${{ vars.SPRINT_CAPACITY_HOURS }}" \
+              -e PLANNING_TRIGGER_LABEL="${{ vars.PLANNING_TRIGGER_LABEL || 'planning' }}" \
+              -e SPRINT_BACKLOG_LABEL="${{ vars.SPRINT_BACKLOG_LABEL || 'Backlog' }}" \
               myapp:latest

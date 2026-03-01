@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     RAG_TOPK_PER_NAMESPACE: int = 8
     RAG_MIN_HITS_MAIN: int = 5
     RAG_MIN_SCORE_MAIN: float = 0.75
-    RAG_MAX_FALLBACK_BASES: int = 3
+    RAG_MAX_FALLBACK_BASES: int = 15
     RAG_FINAL_CONTEXT_SIZE: int = 10
+    HEURISTIC_ENSEMBLE_RUNS: int = 3
+    HEURISTIC_ENSEMBLE_TEMPERATURE: float = 0.6
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14

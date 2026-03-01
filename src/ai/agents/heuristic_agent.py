@@ -68,7 +68,8 @@ Não inclua texto fora do JSON.
 
 def run_heuristic(
     issue_context: Dict[str, Any],
-    llm: LLMClient
+    llm: LLMClient,
+    temperature: float = 0.0,
 ) -> Dict[str, Any]:
     print("[IA][HEURISTIC] inicio issue=%s" % issue_context.get("issue_number"))
 
@@ -84,7 +85,7 @@ def run_heuristic(
 
     response = llm.send_prompt(
         prompt,
-        temperature=0.0, 
+        temperature=float(temperature),
         max_tokens=350
     )
 

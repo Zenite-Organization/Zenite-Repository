@@ -40,10 +40,10 @@ class MockVectorStoreClient:
 
     def list_namespaces(self) -> List[str]:
         return [
-            "org",
+            "repo_issues",
             "org_comments",
             "org_changelog",
-            "mule",
+            "mule_issues",
             "mule_comments",
             "mule_changelog",
         ]
@@ -93,8 +93,8 @@ class MockVectorStoreClient:
         filtered = []
         for it in results:
             repo = str(it.get("repository") or "").lower()
-            org = repo.split("/", 1)[0] if "/" in repo else repo
-            ns = org
+            repo_name = repo.split("/", 1)[1] if "/" in repo else repo
+            ns = f"{repo_name}_issues" if repo_name else ""
             if ns in allowed:
                 enriched = dict(it)
                 enriched["namespace"] = ns

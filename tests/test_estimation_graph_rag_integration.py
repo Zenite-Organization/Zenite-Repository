@@ -6,14 +6,14 @@ from config.settings import settings
 
 class _FakeVectorStore:
     def list_namespaces(self):
-        return ["mdl", "mdl_comments", "mdl_changelog"]
+        return ["mdl_issues", "mdl_comments", "mdl_changelog"]
 
     def semantic_search(self, text, namespaces, top_k=8):
-        if "mdl" in namespaces:
+        if "mdl_issues" in namespaces:
             return [
                 {
                     "id": "issue:321762",
-                    "namespace": "mdl",
+                    "namespace": "mdl_issues",
                     "score": 0.91,
                     "metadata": {
                         "doc_type": "issue",
@@ -33,8 +33,10 @@ class TestEstimationGraphRagIntegration(unittest.TestCase):
     def test_retriever_node_returns_rag_context(self):
         original_vs = eg.vector_store
         prev_score = settings.RAG_MIN_SCORE_MAIN
+        prev_hits = settings.RAG_MIN_HITS_MAIN
         prev_final = settings.RAG_FINAL_CONTEXT_SIZE
         settings.RAG_MIN_SCORE_MAIN = 0.75
+        settings.RAG_MIN_HITS_MAIN = 1
         settings.RAG_FINAL_CONTEXT_SIZE = 10
         eg.vector_store = _FakeVectorStore()
         try:
@@ -56,8 +58,14 @@ class TestEstimationGraphRagIntegration(unittest.TestCase):
             self.assertEqual(first["estimated_hours"], round(31844 / 60.0, 2))
             self.assertGreaterEqual(float(first["score"]), settings.RAG_MIN_SCORE_MAIN)
             self.assertNotIn("real_hours", first)
+            self.assertTrue(out["rag_context_sufficient"])
+            self.assertEqual(out["strategy"], "analogical")
+            self.assertEqual(out["rag_stats"]["qualified_hits"], 1)
+            self.assertEqual(out["rag_stats"]["min_hits"], 1)
+            self.assertEqual(out["rag_stats"]["min_score"], 0.75)
         finally:
             settings.RAG_MIN_SCORE_MAIN = prev_score
+            settings.RAG_MIN_HITS_MAIN = prev_hits
             settings.RAG_FINAL_CONTEXT_SIZE = prev_final
             eg.vector_store = original_vs
 
