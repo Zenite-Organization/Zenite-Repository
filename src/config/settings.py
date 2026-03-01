@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14
-    SPRINT_CAPACITY_HOURS: Optional[int] = None
     PLANNING_TRIGGER_LABEL: str = "planning"
     SPRINT_BACKLOG_LABEL: str = "Backlog"
 
