@@ -112,7 +112,6 @@ jobs:
       HEURISTIC_ENSEMBLE_TEMPERATURE: ${{ vars.HEURISTIC_ENSEMBLE_TEMPERATURE || '0.6' }}
       WORK_HOURS_PER_DAY: ${{ vars.WORK_HOURS_PER_DAY || '8' }}
       SPRINT_DEFAULT_DAYS: ${{ vars.SPRINT_DEFAULT_DAYS || '14' }}
-      SPRINT_CAPACITY_HOURS: ${{ vars.SPRINT_CAPACITY_HOURS }}
       PLANNING_TRIGGER_LABEL: ${{ vars.PLANNING_TRIGGER_LABEL || 'planning' }}
       SPRINT_BACKLOG_LABEL: ${{ vars.SPRINT_BACKLOG_LABEL || 'Backlog' }}
 
@@ -147,7 +146,6 @@ jobs:
             -e HEURISTIC_ENSEMBLE_TEMPERATURE \
             -e WORK_HOURS_PER_DAY \
             -e SPRINT_DEFAULT_DAYS \
-            -e SPRINT_CAPACITY_HOURS \
             -e PLANNING_TRIGGER_LABEL \
             -e SPRINT_BACKLOG_LABEL \
             myapp:latest
@@ -266,7 +264,6 @@ jobs:
               -e HEURISTIC_ENSEMBLE_TEMPERATURE="${{ vars.HEURISTIC_ENSEMBLE_TEMPERATURE || '0.6' }}" \
               -e WORK_HOURS_PER_DAY="${{ vars.WORK_HOURS_PER_DAY || '8' }}" \
               -e SPRINT_DEFAULT_DAYS="${{ vars.SPRINT_DEFAULT_DAYS || '14' }}" \
-              -e SPRINT_CAPACITY_HOURS="${{ vars.SPRINT_CAPACITY_HOURS }}" \
               -e PLANNING_TRIGGER_LABEL="${{ vars.PLANNING_TRIGGER_LABEL || 'planning' }}" \
               -e SPRINT_BACKLOG_LABEL="${{ vars.SPRINT_BACKLOG_LABEL || 'Backlog' }}" \
               myapp:latest
