@@ -15,7 +15,9 @@ def format_similar_issues(similar: List[Dict]) -> str:
             continue
         score = it.get("score", 0)
         type = it.get("issue_type", "unknown")
-        lines.append(f"{idx}. Score: {score:.2f} | Titulo: {title} | Tipo: {type} | horas estimadas: {est}h | Descrição: {it.get('description', '')[:100].replace('\n', ' ')}")
+        desc_raw = it.get('description', '')
+        desc = (desc_raw if isinstance(desc_raw, str) else '')[:400].replace('\n', ' ')
+        lines.append(f"{idx}. Score: {score:.2f} | Titulo: {title} | Tipo: {type} | horas estimadas: {est}h | Descrição: {desc}")
         idx += 1
 
     if not lines:
