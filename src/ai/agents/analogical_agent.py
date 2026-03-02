@@ -45,6 +45,8 @@ def run_analogical(
 
     issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
 
+    print("similar issue:", similar_issues)
+
     prompt = (
         system_prompt
         + "\n\n##NOVA ISSUE\n"
@@ -52,7 +54,7 @@ def run_analogical(
         + "\n\n##ISSUES HISTORICAS SIMILARES\n"
         + format_similar_issues(similar_issues)
     )
-    print("issues similares formatadas:", similar_issues)
+    print("prompt final:", prompt)
     response = llm.send_prompt(prompt, temperature=0.0, max_tokens=400)
 
     try:

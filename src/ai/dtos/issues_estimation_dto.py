@@ -35,6 +35,7 @@ class IssueEstimationDTO(BaseModel):
     is_estimation_issue: bool
     has_assignee: bool
     has_description: bool
+    issue_type: str
 
 
 from datetime import datetime, timezone

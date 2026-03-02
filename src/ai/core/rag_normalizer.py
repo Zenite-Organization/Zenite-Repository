@@ -44,7 +44,7 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             issue_id = str(issue_id)
 
-    estimated_hours = _minutes_to_hours(metadata.get("total_effort_minutes"))
+    estimated_hours = metadata.get("total_effort_hours")
 
     title = _extract_text(metadata, ["issue_title", "title", "summary"])
     description = _extract_text(

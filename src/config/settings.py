@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
     RAG_TOPK_PER_NAMESPACE: int = 8
     RAG_MIN_HITS_MAIN: int = 5
-    RAG_MIN_SCORE_MAIN: float = 0.75
+    RAG_MIN_SCORE_MAIN: float = 0.5
     RAG_MAX_FALLBACK_BASES: int = 15
     RAG_FINAL_CONTEXT_SIZE: int = 10
     HEURISTIC_ENSEMBLE_RUNS: int = 3
