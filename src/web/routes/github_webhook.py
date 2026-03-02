@@ -26,6 +26,7 @@ async def handle_github_issues(
 
     try:
         payload_dict = json.loads(body_bytes.decode("utf-8"))
+
         payload = GitHubIssuesWebhookPayload(**payload_dict)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")

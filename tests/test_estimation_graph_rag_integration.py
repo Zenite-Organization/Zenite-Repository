@@ -55,7 +55,7 @@ class TestEstimationGraphRagIntegration(unittest.TestCase):
             self.assertLessEqual(len(out["similar_issues"]), settings.RAG_FINAL_CONTEXT_SIZE)
             first = out["similar_issues"][0]
             self.assertEqual(first["issue_key"], "MDL-65179")
-            self.assertEqual(first["estimated_hours"], round(31844 / 60.0, 2))
+            self.assertEqual(first["total_effort_hours"], round(31844 / 60.0, 2))
             self.assertGreaterEqual(float(first["score"]), settings.RAG_MIN_SCORE_MAIN)
             self.assertNotIn("real_hours", first)
             self.assertTrue(out["rag_context_sufficient"])

@@ -11,8 +11,8 @@ class _FakeRetrieverSufficient:
 
     def get_similar_issues(self, _issue):
         return [
-            {"id": "1", "score": 0.9, "estimated_hours": 5},
-            {"id": "2", "score": 0.85, "estimated_hours": 8},
+            {"id": "1", "score": 0.9, "total_effort_hours": 5},
+            {"id": "2", "score": 0.85, "total_effort_hours": 8},
         ]
 
 
@@ -21,7 +21,7 @@ class _FakeRetrieverInsufficient:
         pass
 
     def get_similar_issues(self, _issue):
-        return [{"id": "1", "score": 0.5, "estimated_hours": 5}]
+        return [{"id": "1", "score": 0.5, "total_effort_hours": 5}]
 
 
 class _NoTechVectorStore:

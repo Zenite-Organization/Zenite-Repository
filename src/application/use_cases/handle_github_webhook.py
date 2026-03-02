@@ -30,7 +30,6 @@ class HandleGithubWebhookUseCase:
         delivery_id: str,
     ) -> WebhookResult:
         action = payload.action
-
         if event != SUPPORTED_EVENT:
             return WebhookResult(
                 status=WebhookStatus.IGNORED,

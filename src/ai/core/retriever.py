@@ -21,16 +21,17 @@ class Retriever:
 
     @staticmethod
     def _build_query(issue_payload: Dict[str, Any]) -> str:
-        labels = " ".join(issue_payload.get("labels") or [])
-        return "\n".join(
-            [
-                str(issue_payload.get("title") or ""),
-                str(issue_payload.get("description") or ""),
-                labels,
-                str(issue_payload.get("repository") or ""),
-                str(issue_payload.get("repo_language") or ""),
-            ]
-        ).strip()
+  
+        def norm(x: Any) -> str:
+            return str(x).strip() if x else ""
+
+        parts = [
+            f"[Title] {norm(issue_payload.get('title'))}",
+            f"[Description] {norm(issue_payload.get('description'))}",
+        ]
+
+        full_text = "\n".join([p for p in parts if p]).strip()
+        return full_text
 
     @staticmethod
     def _best_score(matches: List[Dict[str, Any]]) -> float:
@@ -177,7 +178,8 @@ class Retriever:
                 "id": item.get("id"),
                 "title": item.get("title"),
                 "description": item.get("description") or item.get("snippet") or "",
-                "estimated_hours": item.get("estimated_hours"),
+                "total_effort_hours": item.get("total_effort_hours"),
+                "issue_type": item.get("issue_type") or "unknown",
                 "doc_type": item.get("doc_type"),
                 "issue_id": item.get("issue_id"),
                 "issue_key": item.get("issue_key"),

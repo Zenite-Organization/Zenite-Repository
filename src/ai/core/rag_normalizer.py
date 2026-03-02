@@ -44,7 +44,7 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             issue_id = str(issue_id)
 
-    estimated_hours = _minutes_to_hours(metadata.get("total_effort_minutes"))
+    total_effort_hours = metadata.get("total_effort_hours")
 
     title = _extract_text(metadata, ["issue_title", "title", "summary"])
     description = _extract_text(
@@ -56,6 +56,7 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": str(raw.get("id") or ""),
         "project_key": str(metadata.get("project_key") or "").lower(),
+        "issue_type": metadata.get("issue_type"),
         "namespace": namespace,
         "doc_type": doc_type,
         "issue_id": issue_id,
@@ -63,7 +64,7 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "description": description,
         "snippet": snippet,
-        "estimated_hours": estimated_hours,
+        "total_effort_hours": total_effort_hours,
         "score": float(raw.get("score") or 0.0),
         "metadata": metadata,
     }

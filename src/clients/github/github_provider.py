@@ -248,9 +248,6 @@ class GitHubProjectProvider(ProjectProvider):
                         else None
                     ),
                     repo_size=repo.get("diskUsage"),
-                    is_estimation_issue=any("estimate" in l.lower() for l in labels),
-                    has_assignee=len(assignees) > 0,
-                    has_description=bool(issue.get("body")),
                 )
 
                 results.append(dto)
