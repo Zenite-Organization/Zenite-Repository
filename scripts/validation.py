@@ -65,9 +65,6 @@ def build_dto_from_row(r: dict) -> IssueEstimationDTO:
         author_role="NONE",
         repo_language=None,
         repo_size=None,
-        is_estimation_issue=False,
-        has_assignee=(assignee_id is not None),
-        has_description=bool(description_text),
     )
 
 

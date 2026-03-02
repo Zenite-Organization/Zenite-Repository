@@ -21,7 +21,7 @@ class TestRagNormalizer(unittest.TestCase):
                 },
             }
         )
-        self.assertEqual(item["estimated_hours"], 2.0)
+        self.assertEqual(item["total_effort_hours"], 2.0)
         self.assertNotIn("real_hours", item)
         self.assertEqual(item["doc_type"], "issue")
         self.assertEqual(item["issue_id"], 1)
@@ -41,7 +41,7 @@ class TestRagNormalizer(unittest.TestCase):
                 },
             }
         )
-        self.assertEqual(item["estimated_hours"], 1.0)
+        self.assertEqual(item["total_effort_hours"], 1.0)
         self.assertEqual(item["title"], "Issue Title Priority")
         self.assertNotIn("real_hours", item)
 

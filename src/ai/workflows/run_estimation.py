@@ -49,9 +49,6 @@ def main():
         author_role=args.author_role,
         repo_language=args.repo_language or None,
         repo_size=args.repo_size,
-        is_estimation_issue=any("estimate" in label.lower() for label in labels),
-        has_assignee=len(assignees) > 0,
-        has_description=bool(args.body),
     )
 
     result = run_estimation_flow(dto)

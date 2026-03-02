@@ -10,10 +10,12 @@ def format_similar_issues(similar: List[Dict]) -> str:
     for it in similar:
         raw_title = it.get("title")
         title = (raw_title if isinstance(raw_title, str) else "").strip()[:200].replace("\n", " ")
-        est = it.get("estimated_hours")
+        est = it.get("total_effort_hours")
         if not title or est is None:
             continue
-        lines.append(f"{idx}. {title} | est: {est}h")
+        score = it.get("score", 0)
+        type = it.get("issue_type", "unknown")
+        lines.append(f"{idx}. Score: {score:.2f} | Titulo: {title} | Tipo: {type} | horas estimadas: {est}h | Descrição: {it.get('description', '')[:100].replace('\n', ' ')}")
         idx += 1
 
     if not lines:

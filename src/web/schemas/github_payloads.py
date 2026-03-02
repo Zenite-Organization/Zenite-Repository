@@ -19,6 +19,12 @@ class AssigneePayload(BaseModel):
     login: str
     id: Optional[int] = None
 
+
+class TypePayload(BaseModel):
+    id: Optional[int] = None
+    node_id: Optional[str] = None
+    name: Optional[str] = None
+
 class RepositoryPayload(BaseModel):
     full_name: str
     name: Optional[str] = None
@@ -54,6 +60,7 @@ class IssuePayload(BaseModel):
 
     labels: List[LabelPayload] = []
     assignees: List[AssigneePayload] = []
+    type: Optional[TypePayload] = None
 
     user: Optional[UserPayload] = None
     author_association: Optional[str] = None

@@ -6,32 +6,46 @@ import json
 
 
 SYSTEM_ROLE = (
-    "Voce e um especialista senior em estimativa de esforco de software, "
-    "capaz de analisar tarefas novas com base em historico de issues semelhantes."
+    "Você é um especialista sênior em estimativa de esforço de software por analogia."
 )
 
 INSTRUCTION = """
-Voce recebeu o contexto completo de uma nova tarefa (issue) e uma lista de issues historicas similares.
+Você recebeu:
+(1) o contexto completo de uma nova issue
+(2) uma lista de issues históricas semelhantes, cada uma com horas estimatadas e score (0..1)
 
-Utilize TODAS as informacoes relevantes do contexto, como:
-- titulo
-- descricao
-- labels
-- repositorio
-- contexto extra (se houver)
+Objetivo:
+Gerar uma estimativa de esforço em horas para a NOVA issue, usando principalmente o histórico.
+Use o campo score para ponderar as issues semelhantes.
 
-Compare a nova tarefa com as issues similares e calcule uma estimativa de esforco em horas,
-priorizando a comparacao com os campos 'estimated_hours' das issues historicas.
+IMPORTANTE (Duplicatas / Similaridade alta):
+1) Se existir ao menos 1 issue histórica com score >= 0.92 e título (ou termos-chave) praticamente idênticos,
+   trate essa issue como "âncora" e NÃO a descarte como outlier, mesmo que total_effort_hours seja muito diferente das demais.
+2) Quando houver âncora:
+   - Faça estimate_hours ficar relativamente próximo do total_effort_hours da âncora (ex.: dentro de ~20% a ~40%),
+     a menos que existam evidências explícitas no texto da NOVA issue indicando escopo menor/maior.
+   - Dê peso dominante à âncora (ex.: 60% a 85%) e distribua o restante entre as próximas mais similares.
 
-Retorne APENAS um JSON valido com os campos:
-- estimate_hours (float)
-- confidence (float entre 0 e 1)
-- justification (string)
+Robustez contra outliers (quando NÃO houver âncora):
+3) Use agregação robusta nas top-K similares (ex.: K=8 a 15):
+   - priorize weighted median ou média ponderada com corte (trim) para reduzir influência de extremos.
+   - score deve ser o peso principal (peso cresce não-linearmente; ex.: score^3).
 
-Regras:
-- Se houver poucas issues similares ou baixa similaridade, reduza a confidence (ex: 0.3 a 0.5)
-- Explique claramente o raciocinio na justification
-- Nao inclua texto fora do JSON
+Regras adicionais:
+4) Dê preferência a issues com mesmo tipo e labels/componentes semelhantes.
+5) Se houver poucos exemplos úteis (ex.: <4 com score >= 0.75), reduza confidence.
+6) Confidence deve refletir:
+   - quantidade de itens relevantes
+   - magnitude do score (top1 e top3)
+   - dispersão das horas (se muito disperso, confidence menor), EXCETO quando houver âncora forte.
+
+Retorne APENAS um JSON válido com:
+{
+  "estimate_hours": float,
+  "confidence": float (0..1),
+  "justification": "string curta explicando: top similares usados, presença/ausência de âncora, como ponderou, e por que a confiança é X"
+}
+Não inclua nenhum texto fora do JSON.
 """
 
 
@@ -45,7 +59,7 @@ def run_analogical(
 
     issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
 
-    print("similar issue:", similar_issues)
+    # print("similar issue:", similar_issues)
 
     prompt = (
         system_prompt
