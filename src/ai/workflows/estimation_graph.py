@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, START, END
 
@@ -119,19 +120,48 @@ def analogical_node(state: EstimationState) -> EstimationState:
 
 
 def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
-    llm = LLMClient()
     issue = state["issue"]
     runs = int(settings.HEURISTIC_ENSEMBLE_RUNS)
     temperature = float(settings.HEURISTIC_ENSEMBLE_TEMPERATURE)
     candidates: List[Estimation] = []
 
-    for _ in range(runs):
-        res = run_heuristic(
+    max_concurrency = int(getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", runs) or runs)
+    if max_concurrency <= 0:
+        max_concurrency = runs
+    max_concurrency = max(1, min(max_concurrency, runs))
+
+    def _run_once() -> Dict[str, Any]:
+        # Create a client per call to avoid shared-state/thread-safety issues.
+        llm = LLMClient()
+        return run_heuristic(
             issue_context=issue,
             llm=llm,
             temperature=temperature,
         )
-        candidates.append(normalize_estimation(res))
+
+    if runs <= 1 or max_concurrency == 1:
+        for _ in range(runs):
+            res = _run_once()
+            candidates.append(normalize_estimation(res))
+        return {"heuristic_candidates": candidates}
+
+    results: List[Optional[Estimation]] = [None] * runs
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        future_to_idx = {executor.submit(_run_once): idx for idx in range(runs)}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                res = future.result()
+            except Exception as exc:
+                res = {
+                    "estimate_hours": 8,
+                    "confidence": 0.3,
+                    "justification": "Falha ao executar heurística; valor padrão aplicado.",
+                    "error": str(exc),
+                }
+            results[idx] = normalize_estimation(res)
+
+    candidates = [r for r in results if r is not None]
 
     return {"heuristic_candidates": candidates}
 
