@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     RAG_MIN_SCORE_MAIN: float = 0.5
     RAG_MAX_FALLBACK_BASES: int = 15
     RAG_FINAL_CONTEXT_SIZE: int = 10
-    HEURISTIC_ENSEMBLE_RUNS: int = 3
+    HEURISTIC_ENSEMBLE_RUNS: int = 4
     HEURISTIC_ENSEMBLE_TEMPERATURE: float = 0.6
     # Max number of parallel LLM calls for the heuristic ensemble.
     # If <= 0, it will default to HEURISTIC_ENSEMBLE_RUNS.

@@ -15,10 +15,13 @@ from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 
 
 
-class Estimation(TypedDict):
+class Estimation(TypedDict, total=False):
     estimated_hours: float
     confidence: float
     justification: str
+    percentile: str
+    source: str
+    error: str
 
 
 class EstimationState(TypedDict, total=False):
@@ -134,15 +137,32 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
         ("p75", 0.75),
         ("p100", 1.00),
     ]
+    runs = len(agents)
 
-    candidates: List[Estimation] = []
+    temperature = float(getattr(settings, "HEURISTIC_ENSEMBLE_TEMPERATURE", 0.0) or 0.0)
 
     max_concurrency = int(getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", runs) or runs)
     if max_concurrency <= 0:
         max_concurrency = runs
     max_concurrency = max(1, min(max_concurrency, runs))
 
-    def _run_once() -> Dict[str, Any]:
+    candidates: List[Estimation] = []
+
+    if runs <= 1 or max_concurrency == 1:
+        for percentile, _weight in agents:
+            llm = LLMClient()
+            res = run_heuristic(
+                issue_context=issue,
+                llm=llm,
+                temperature=temperature,
+                mode=percentile,
+            )
+            normalized = normalize_estimation(res)
+            normalized["percentile"] = percentile
+            candidates.append(normalized)
+        return {"heuristic_candidates": candidates}
+
+    def _run_once(percentile: str) -> Dict[str, Any]:
         # Create a client per call to avoid shared-state/thread-safety issues.
         llm = LLMClient()
         return run_heuristic(
@@ -151,8 +171,29 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
             temperature=temperature,
             mode=percentile,
         )
-        candidates.append(normalize_estimation(res))
 
+    results: List[Optional[Estimation]] = [None] * runs
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        future_to_idx = {
+            executor.submit(_run_once, agents[idx][0]): idx for idx in range(runs)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                res = future.result()
+            except Exception as exc:
+                res = {
+                    "estimated_hours": 8,
+                    "confidence": 0.3,
+                    "justification": "Falha ao executar heurística; valor padrão aplicado.",
+                    "error": str(exc),
+                }
+            percentile = agents[idx][0]
+            normalized = normalize_estimation(res)
+            normalized["percentile"] = percentile
+            results[idx] = normalized
+
+    candidates = [r for r in results if r is not None]
     return {"heuristic_candidates": candidates}
 
 

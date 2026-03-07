@@ -69,12 +69,10 @@ class TestEstimationGraphRouting(unittest.TestCase):
     def test_routes_to_heuristic_ensemble_when_context_insufficient(self):
         prev_min_hits = settings.RAG_MIN_HITS_MAIN
         prev_min_score = settings.RAG_MIN_SCORE_MAIN
-        prev_runs = settings.HEURISTIC_ENSEMBLE_RUNS
         prev_temp = settings.HEURISTIC_ENSEMBLE_TEMPERATURE
         prev_concurrency = getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", None)
         settings.RAG_MIN_HITS_MAIN = 2
         settings.RAG_MIN_SCORE_MAIN = 0.75
-        settings.HEURISTIC_ENSEMBLE_RUNS = 3
         settings.HEURISTIC_ENSEMBLE_TEMPERATURE = 0.6
         settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = 1
 
@@ -82,9 +80,10 @@ class TestEstimationGraphRouting(unittest.TestCase):
         eg.vector_store = _NoTechVectorStore()
         try:
             heuristic_outputs = [
-                {"estimated_hours": 6, "confidence": 0.6, "justification": "h1"},
-                {"estimated_hours": 8, "confidence": 0.7, "justification": "h2"},
-                {"estimated_hours": 10, "confidence": 0.8, "justification": "h3"},
+                {"estimated_hours": 6, "confidence": 0.6, "justification": "h1", "percentile": "p25"},
+                {"estimated_hours": 8, "confidence": 0.7, "justification": "h2", "percentile": "p50"},
+                {"estimated_hours": 10, "confidence": 0.8, "justification": "h3", "percentile": "p75"},
+                {"estimated_hours": 12, "confidence": 0.75, "justification": "h4", "percentile": "p100"},
             ]
 
             with patch.object(eg, "Retriever", _FakeRetrieverInsufficient), patch.object(
@@ -105,18 +104,20 @@ class TestEstimationGraphRouting(unittest.TestCase):
                 )
 
                 self.assertEqual(state["strategy"], "heuristic_ensemble")
-                self.assertEqual(len(state["heuristic_candidates"]), 3)
+                self.assertEqual(len(state["heuristic_candidates"]), 4)
                 self.assertEqual(state["final_estimation"]["estimated_hours"], 8)
                 self.assertEqual(state["final_estimation"]["confidence"], 0.77)
-                self.assertEqual(heuristic_mock.call_count, 3)
+                self.assertEqual(heuristic_mock.call_count, 4)
                 analogical_mock.assert_not_called()
                 combine_mock.assert_called_once()
                 estimations = combine_mock.call_args.kwargs["estimations"]
-                self.assertEqual([e["source"] for e in estimations], ["heuristic_1", "heuristic_2", "heuristic_3"])
+                self.assertEqual(
+                    [e["source"] for e in estimations],
+                    ["heuristic_1", "heuristic_2", "heuristic_3", "heuristic_4"],
+                )
         finally:
             settings.RAG_MIN_HITS_MAIN = prev_min_hits
             settings.RAG_MIN_SCORE_MAIN = prev_min_score
-            settings.HEURISTIC_ENSEMBLE_RUNS = prev_runs
             settings.HEURISTIC_ENSEMBLE_TEMPERATURE = prev_temp
             settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = prev_concurrency
             eg.vector_store = original_vs
