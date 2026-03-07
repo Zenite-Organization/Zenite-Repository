@@ -53,8 +53,10 @@ class MockVectorStoreClient:
         text: str,
         namespaces: List[str] | None = None,
         top_k: int = 5,
+        where: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         # Simples heurística: retorna os top_k com base em presença de palavras-chave
+        _ = where  # compat: mock nÃ£o interpreta filtro Pinecone
         text_l = text.lower()
         scored = []
         for it in self.issues:

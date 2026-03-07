@@ -52,6 +52,7 @@ class PineconeVectorStoreClient(VectorStoreClient):
         text: str,
         namespaces: List[str],
         top_k: int = 8,
+        where: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         if not self._ready:
             return []
@@ -68,6 +69,7 @@ class PineconeVectorStoreClient(VectorStoreClient):
                     top_k=top_k,
                     namespace=namespace,
                     include_metadata=True,
+                    filter=where or None,
                 )
 
                 matches = getattr(response, "matches", None) or response.get("matches", [])

@@ -1,4 +1,5 @@
-﻿import logging
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, START, END
 
@@ -125,7 +126,6 @@ def analogical_node(state: EstimationState) -> EstimationState:
 
 
 def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
-    llm = LLMClient()
     issue = state["issue"]
 
     agents = [
@@ -137,23 +137,21 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
 
     candidates: List[Estimation] = []
 
-    for percentile, temperature in agents:
-        res = run_heuristic(
+    max_concurrency = int(getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", runs) or runs)
+    if max_concurrency <= 0:
+        max_concurrency = runs
+    max_concurrency = max(1, min(max_concurrency, runs))
+
+    def _run_once() -> Dict[str, Any]:
+        # Create a client per call to avoid shared-state/thread-safety issues.
+        llm = LLMClient()
+        return run_heuristic(
             issue_context=issue,
             llm=llm,
             temperature=temperature,
             mode=percentile,
         )
-
-        est = normalize_estimation(res)
-
-        try:
-            est["source"] = f"heuristic_{percentile}"
-            est["percentile"] = percentile
-        except Exception:
-            pass
-
-        candidates.append(est)
+        candidates.append(normalize_estimation(res))
 
     return {"heuristic_candidates": candidates}
 

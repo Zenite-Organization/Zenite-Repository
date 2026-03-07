@@ -71,10 +71,12 @@ class TestEstimationGraphRouting(unittest.TestCase):
         prev_min_score = settings.RAG_MIN_SCORE_MAIN
         prev_runs = settings.HEURISTIC_ENSEMBLE_RUNS
         prev_temp = settings.HEURISTIC_ENSEMBLE_TEMPERATURE
+        prev_concurrency = getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", None)
         settings.RAG_MIN_HITS_MAIN = 2
         settings.RAG_MIN_SCORE_MAIN = 0.75
         settings.HEURISTIC_ENSEMBLE_RUNS = 3
         settings.HEURISTIC_ENSEMBLE_TEMPERATURE = 0.6
+        settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = 1
 
         original_vs = eg.vector_store
         eg.vector_store = _NoTechVectorStore()
@@ -116,6 +118,7 @@ class TestEstimationGraphRouting(unittest.TestCase):
             settings.RAG_MIN_SCORE_MAIN = prev_min_score
             settings.HEURISTIC_ENSEMBLE_RUNS = prev_runs
             settings.HEURISTIC_ENSEMBLE_TEMPERATURE = prev_temp
+            settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = prev_concurrency
             eg.vector_store = original_vs
 
 

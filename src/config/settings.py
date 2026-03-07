@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     RAG_FINAL_CONTEXT_SIZE: int = 10
     HEURISTIC_ENSEMBLE_RUNS: int = 3
     HEURISTIC_ENSEMBLE_TEMPERATURE: float = 0.6
+    # Max number of parallel LLM calls for the heuristic ensemble.
+    # If <= 0, it will default to HEURISTIC_ENSEMBLE_RUNS.
+    HEURISTIC_ENSEMBLE_MAX_CONCURRENCY: int = 3
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14
