@@ -16,12 +16,12 @@ class Settings(BaseSettings):
     OPENAI_API_KEY_RAG: Optional[str] = None
     RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
     RAG_TOPK_PER_NAMESPACE: int = 8
-    RAG_MIN_HITS_MAIN: int = 5
-    RAG_MIN_SCORE_MAIN: float = 0.5
-    RAG_MAX_FALLBACK_BASES: int = 15
+    RAG_MIN_HITS_MAIN: int = 3
+    RAG_MIN_SCORE_MAIN: float = 0.6
+    RAG_MAX_FALLBACK_BASES: int = 99
     RAG_FINAL_CONTEXT_SIZE: int = 10
     HEURISTIC_ENSEMBLE_RUNS: int = 4
-    HEURISTIC_ENSEMBLE_TEMPERATURE: float = 0.6
+    HEURISTIC_ENSEMBLE_TEMPERATURE: float = 0.3
     # Max number of parallel LLM calls for the heuristic ensemble.
     # If <= 0, it will default to HEURISTIC_ENSEMBLE_RUNS.
     HEURISTIC_ENSEMBLE_MAX_CONCURRENCY: int = 3
