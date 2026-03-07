@@ -42,7 +42,7 @@ class TestEstimationGraphRouting(unittest.TestCase):
                 eg,
                 "run_analogical",
                 return_value={
-                    "estimate_hours": 13.0,
+                    "estimated_hours": 13.0,
                     "confidence": 0.82,
                     "justification": "Baseado em historico similar.",
                 },
@@ -55,7 +55,7 @@ class TestEstimationGraphRouting(unittest.TestCase):
 
                 self.assertEqual(state["strategy"], "analogical")
                 self.assertIn("final_estimation", state)
-                self.assertEqual(state["final_estimation"]["estimate_hours"], 13.0)
+                self.assertEqual(state["final_estimation"]["estimated_hours"], 13.0)
                 self.assertEqual(state["final_estimation"]["confidence"], 0.82)
                 self.assertIn("Rota analogical escolhida", state["final_estimation"]["justification"])
                 analogical_mock.assert_called_once()
@@ -80,9 +80,9 @@ class TestEstimationGraphRouting(unittest.TestCase):
         eg.vector_store = _NoTechVectorStore()
         try:
             heuristic_outputs = [
-                {"estimate_hours": 6, "confidence": 0.6, "justification": "h1"},
-                {"estimate_hours": 8, "confidence": 0.7, "justification": "h2"},
-                {"estimate_hours": 10, "confidence": 0.8, "justification": "h3"},
+                {"estimated_hours": 6, "confidence": 0.6, "justification": "h1"},
+                {"estimated_hours": 8, "confidence": 0.7, "justification": "h2"},
+                {"estimated_hours": 10, "confidence": 0.8, "justification": "h3"},
             ]
 
             with patch.object(eg, "Retriever", _FakeRetrieverInsufficient), patch.object(
@@ -93,7 +93,7 @@ class TestEstimationGraphRouting(unittest.TestCase):
                 eg,
                 "combine_heuristic_estimations",
                 return_value={
-                    "estimate_hours": 8,
+                    "estimated_hours": 8,
                     "confidence": 0.77,
                     "justification": "consolidado",
                 },
@@ -104,7 +104,7 @@ class TestEstimationGraphRouting(unittest.TestCase):
 
                 self.assertEqual(state["strategy"], "heuristic_ensemble")
                 self.assertEqual(len(state["heuristic_candidates"]), 3)
-                self.assertEqual(state["final_estimation"]["estimate_hours"], 8)
+                self.assertEqual(state["final_estimation"]["estimated_hours"], 8)
                 self.assertEqual(state["final_estimation"]["confidence"], 0.77)
                 self.assertEqual(heuristic_mock.call_count, 3)
                 analogical_mock.assert_not_called()

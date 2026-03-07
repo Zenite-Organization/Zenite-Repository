@@ -85,9 +85,10 @@ FROM issue i
 JOIN Project p ON p.ID = i.Project_ID
 WHERE
   i.resolution_date IS NOT NULL
-  AND i.total_effort_minutes >= 15
   AND i.status IN ('Closed','Done','Resolved','Complete')
   AND i.resolution IN ('Fixed','Done','Complete','Completed','Works as Designed')
+  AND cast((x.total_effort_minutes/60) as SIGNED)  BETWEEN 1 AND 300
+  AND length(description_text) >= 100 
   AND i.project_id = %s
 ORDER BY i.ID
 LIMIT 5;

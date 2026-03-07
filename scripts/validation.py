@@ -1,4 +1,5 @@
 import os, sys, uuid, asyncio
+from typing import Optional
 from sqlalchemy import create_engine, text
 
 # Rode a partir da raiz do repo:
@@ -7,6 +8,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 from application.services.estimation_service import EstimationService
+
+
+def normalize_estimation_model(strategy: Optional[str]) -> str:
+    if strategy == "analogical":
+        return "analogical"
+    return "heuristic"
 
 
 def get_engine():
@@ -96,7 +103,8 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
                 x.resolution_date IS NOT NULL
                 AND x.status IN ('Closed','Done','Resolved','Complete')
                 AND x.resolution IN ('Fixed','Done','Complete','Completed','Works as Designed')
-                AND x.total_effort_minutes >= 15
+                AND cast((x.total_effort_minutes/60) as SIGNED) BETWEEN 1 AND 300
+                AND length(description_text) >= 100 
                 AND x.project_id = :project_id
         ) i
         ORDER BY rn
@@ -126,14 +134,15 @@ async def main():
     upsert_sql = text("""
         INSERT INTO issue_estimation_validation
           (validation_run_id, project_key, issue_id, issue_number, repository,
-           predicted_hours, confidence, justification, model_version, predicted_at)
+           predicted_hours, confidence, justification, estimation_model, model_version, predicted_at)
         VALUES
           (:validation_run_id, :project_key, :issue_id, :issue_number, :repository,
-           :predicted_hours, :confidence, :justification, :model_version, NOW())
+           :predicted_hours, :confidence, :justification, :estimation_model, :model_version, NOW())
         ON DUPLICATE KEY UPDATE
           predicted_hours = VALUES(predicted_hours),
           confidence        = VALUES(confidence),
           justification     = VALUES(justification),
+          estimation_model  = VALUES(estimation_model),
           model_version     = VALUES(model_version),
           predicted_at      = NOW()
     """)
@@ -145,8 +154,12 @@ async def main():
             dto = build_dto_from_row(r)
             state = await svc.run(dto)
             final_estimation = state.get("final_estimation", {}) or {}
+            estimation_model = (
+                final_estimation.get("estimation_model")
+                or normalize_estimation_model(state.get("strategy"))
+            )
 
-            predicted_hours = final_estimation.get("estimate_hours")
+            predicted_hours = final_estimation.get("estimated_hours")
 
             conn.execute(upsert_sql, {
                 "validation_run_id": run_id,
@@ -158,6 +171,7 @@ async def main():
                 "predicted_hours": predicted_hours,
                 "confidence": final_estimation.get("confidence"),
                 "justification": final_estimation.get("justification", ""),
+                "estimation_model": estimation_model,
                 "model_version": model_version,
             })
 

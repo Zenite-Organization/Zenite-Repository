@@ -19,7 +19,7 @@ class RunIssueEstimationUseCase:
         estimation_state = await self.estimation_service.run(dto)
         estimation = estimation_state.get("final_estimation", {})
 
-        estimate_value = estimation.get("estimate_hours", 0)
+        estimate_value = estimation.get("estimated_hours", 0)
         confidence = estimation.get("confidence", 0)
         justification = estimation.get("justification", "")
 
