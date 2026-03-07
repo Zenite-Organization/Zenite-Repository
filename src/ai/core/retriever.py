@@ -67,6 +67,15 @@ class Retriever:
             return f"issue:{issue_id}"
         return str(match.get("id") or "")
 
+    @staticmethod
+    def _pinecone_where_filter() -> Dict[str, Any]:
+        return {
+            "$and": [
+                {"total_effort_hours": {"$gte": 1, "$lte": 300}},
+                {"description": {"$exists": True, "$ne": ""}},
+            ]
+        }
+
     def get_similar_issues(
         self,
         issue_payload: Dict[str, Any],
@@ -110,12 +119,14 @@ class Retriever:
         seen_keys = set()
         filtered_out_low_score_total = 0
         stop_reason = "no_more_namespaces"
+        where = self._pinecone_where_filter()
 
         for namespace in namespace_order:
             raw = self.vs.semantic_search(
                 query_text,
                 namespaces=[namespace],
                 top_k=top_k,
+                where=where,
             )
             queried_namespaces.append(namespace)
             all_raw_matches.extend(raw)
