@@ -83,7 +83,7 @@ pip install -r requirements.txt
 
 3. Configurar `.env`:
 
-- `WEBHOOK_SECRET`
+- `GITHUB_WEBHOOK_SECRET`
 - `GEMINI_API_KEY`
 - `APP_ID`
 - `APP_PRIVATE_KEY` ou `APP_PRIVATE_KEY_path`

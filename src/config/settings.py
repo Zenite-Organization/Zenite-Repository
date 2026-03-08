@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    WEBHOOK_SECRET: Optional[str] = None
+    GITHUB_WEBHOOK_SECRET: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     APP_ID: Optional[str] = None
     APP_PRIVATE_KEY: Optional[str] = None  # PEM string; alternatively set path and load it in code
