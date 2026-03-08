@@ -104,11 +104,11 @@ def estimate_tasks(state: SprintPlanningState):
         else:
             est_state = run_estimation_flow(orig)
             hours = float(
-                est_state.get("final_estimation", {}).get("estimate_hours", 0)
+                est_state.get("final_estimation", {}).get("estimated_hours", 0)
             )
             cache[key] = hours
 
-        item_dict["estimate_hours"] = hours
+        item_dict["estimated_hours"] = hours
         item_dict["priority"] = p.get("priority")
         item_dict["priority_reason"] = p.get("reason")
         estimated.append(item_dict)
@@ -130,7 +130,7 @@ def select_for_sprint(state: SprintPlanningState):
     # Ordena: prioridade desc, depois menor esforço primeiro (melhor packing)
     sorted_tasks = sorted(
         state.get("estimates", []),
-        key=lambda t: (-score(t), t.get("estimate_hours", 0))
+        key=lambda t: (-score(t), t.get("estimated_hours", 0))
     )
 
     selected = []
@@ -138,7 +138,7 @@ def select_for_sprint(state: SprintPlanningState):
     capacity = state.get("capacity_hours", 0)
 
     for t in sorted_tasks:
-        hours = float(t.get("estimate_hours", 0))
+        hours = float(t.get("estimated_hours", 0))
         if used_hours + hours <= capacity:
             selected.append(t)
             used_hours += hours

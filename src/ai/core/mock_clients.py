@@ -53,8 +53,10 @@ class MockVectorStoreClient:
         text: str,
         namespaces: List[str] | None = None,
         top_k: int = 5,
+        where: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         # Simples heurística: retorna os top_k com base em presença de palavras-chave
+        _ = where  # compat: mock nÃ£o interpreta filtro Pinecone
         text_l = text.lower()
         scored = []
         for it in self.issues:
@@ -119,7 +121,7 @@ class MockLLMClient:
             words = len(re.findall(r"\w+", prompt))
             est = max(1.0, round(words / 10.0 * 2.0, 1))
             conf = 0.6 + min(0.3, (est / 20.0))
-            resp = {"estimate_hours": est, "confidence": round(conf, 2), "justification": "Heurística simulada baseada no tamanho e fatores."}
+            resp = {"estimated_hours": est, "confidence": round(conf, 2), "justification": "Heurística simulada baseada no tamanho e fatores."}
             import json
             return json.dumps(resp)
 
@@ -132,10 +134,10 @@ class MockLLMClient:
                 avg = sum(nums) / len(nums)
                 conf = 0.6 if len(nums) < 3 else 0.8
                 import json
-                return json.dumps({"estimate_hours": round(avg, 1), "confidence": conf, "justification": "Estimativa baseada em issues historicas similares."})
+                return json.dumps({"estimated_hours": round(avg, 1), "confidence": conf, "justification": "Estimativa baseada em issues historicas similares."})
             # fallback
             import json
-            return json.dumps({"estimate_hours": 8.0, "confidence": 0.4, "justification": "Fallback analogico: sem similares extraidos."})
+            return json.dumps({"estimated_hours": 8.0, "confidence": 0.4, "justification": "Fallback analogico: sem similares extraidos."})
         # Correction: tenta extrair factors real/estimated
         if "fator" in p or "correc" in p or "estimativa base" in p:
             pairs = re.findall(r"est[:=]?\s*(\d+(?:\.\d+)?)h|total_effort_hours[:=]?\s*(\d+(?:\.\d+)?)", prompt)
@@ -154,13 +156,13 @@ class MockLLMClient:
             else:
                 adjusted = round((sum(reals) / len(reals)) if reals else 8.0, 1)
             import json
-            return json.dumps({"estimate_hours": adjusted, "confidence": 0.75, "justification": f"Ajuste por fator medio {factor:.2f}x"})
+            return json.dumps({"estimated_hours": adjusted, "confidence": 0.75, "justification": f"Ajuste por fator medio {factor:.2f}x"})
 
         # Default fallback
         # Combine/refine handling
         if "combinar" in p or "combine" in p or "sintet" in p or "synthesize" in p:
-            # try to extract estimate_hours and confidences
-            ests = [float(x) for x in re.findall(r"estimate_hours\"?:?\s*([0-9]+(?:\.[0-9]+)?)", prompt)]
+            # try to extract estimated_hours and confidences
+            ests = [float(x) for x in re.findall(r"estimated_hours\"?:?\s*([0-9]+(?:\.[0-9]+)?)", prompt)]
             confs = [float(x) for x in re.findall(r"confidence\"?:?\s*([0-9]+(?:\.[0-9]+)?)", prompt)]
             if ests:
                 # weight by confidences if present
@@ -178,8 +180,8 @@ class MockLLMClient:
                     combined_conf = 0.6
                 combined_conf = max(0.0, min(0.99, combined_conf))
                 import json
-                return json.dumps({"estimate_hours": round(weighted, 2), "confidence": round(combined_conf, 2), "justification": "Refinamento sintetizado pelo mock LLM."})
+                return json.dumps({"estimated_hours": round(weighted, 2), "confidence": round(combined_conf, 2), "justification": "Refinamento sintetizado pelo mock LLM."})
 
         import json
-        return json.dumps({"estimate_hours": 8.0, "confidence": 0.5, "justification": "Resposta padrao do mock LLM."})
+        return json.dumps({"estimated_hours": 8.0, "confidence": 0.5, "justification": "Resposta padrao do mock LLM."})
 

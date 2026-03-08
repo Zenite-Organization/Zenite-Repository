@@ -18,9 +18,9 @@ class TestWebhookRoute(unittest.TestCase):
             "x-github-event": event,
             "x-github-delivery": delivery,
         }
-        if settings.WEBHOOK_SECRET:
+        if settings.GITHUB_WEBHOOK_SECRET:
             digest = hmac.new(
-                settings.WEBHOOK_SECRET.encode("utf-8"),
+                settings.GITHUB_WEBHOOK_SECRET.encode("utf-8"),
                 body,
                 hashlib.sha256,
             ).hexdigest()
@@ -54,8 +54,8 @@ class TestWebhookRoute(unittest.TestCase):
         self.assertEqual(body["flow"], "none")
 
     def test_returns_401_when_signature_is_required_and_missing(self):
-        previous_secret = settings.WEBHOOK_SECRET
-        settings.WEBHOOK_SECRET = "secret"
+        previous_secret = settings.GITHUB_WEBHOOK_SECRET
+        settings.GITHUB_WEBHOOK_SECRET = "secret"
         try:
             response = self.client.post(
                 "/webhook/github",
@@ -71,7 +71,7 @@ class TestWebhookRoute(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 401)
         finally:
-            settings.WEBHOOK_SECRET = previous_secret
+            settings.GITHUB_WEBHOOK_SECRET = previous_secret
 
 
 if __name__ == "__main__":

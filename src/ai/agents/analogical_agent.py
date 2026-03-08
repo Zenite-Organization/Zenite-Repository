@@ -12,7 +12,7 @@ SYSTEM_ROLE = (
 INSTRUCTION = """
 Você recebeu:
 (1) o contexto completo de uma nova issue
-(2) uma lista de issues históricas semelhantes, cada uma com horas estimatadas e score (0..1)
+(2) uma lista de issues históricas semelhantes, contendo informacoes como titulo, descricao, tipo da demanda, score (entre 0 e 1) e horas consumidas (tempo que aquela issue levou para ser finalizada)
 
 Objetivo:
 Gerar uma estimativa de esforço em horas para a NOVA issue, usando principalmente o histórico.
@@ -20,9 +20,9 @@ Use o campo score para ponderar as issues semelhantes.
 
 IMPORTANTE (Duplicatas / Similaridade alta):
 1) Se existir ao menos 1 issue histórica com score >= 0.92 e título (ou termos-chave) praticamente idênticos,
-   trate essa issue como "âncora" e NÃO a descarte como outlier, mesmo que total_effort_hours seja muito diferente das demais.
+   trate essa issue como "âncora" e NÃO a descarte como outlier, mesmo que as horas consumidas seja muito diferente das demais.
 2) Quando houver âncora:
-   - Faça estimate_hours ficar relativamente próximo do total_effort_hours da âncora (ex.: dentro de ~20% a ~40%),
+   - Faça estimated_hours ficar relativamente próximo das horas consumidas da âncora (ex.: dentro de ~20% a ~40%),
      a menos que existam evidências explícitas no texto da NOVA issue indicando escopo menor/maior.
    - Dê peso dominante à âncora (ex.: 60% a 85%) e distribua o restante entre as próximas mais similares.
 
@@ -41,11 +41,10 @@ Regras adicionais:
 
 Retorne APENAS um JSON válido com:
 {
-  "estimate_hours": float,
+  "estimated_hours": float,
   "confidence": float (0..1),
   "justification": "string curta explicando: top similares usados, presença/ausência de âncora, como ponderou, e por que a confiança é X"
 }
-Não inclua nenhum texto fora do JSON.
 """
 
 
@@ -77,7 +76,7 @@ def run_analogical(
     except Exception as e:
         print(f"[IA][ANALOGICAL] erro parse: {e}")
         return {
-            "estimate_hours": 0,
+            "estimated_hours": 0,
             "confidence": 0.0,
             "justification": "Falha ao interpretar resposta do modelo.",
             "error": str(e),

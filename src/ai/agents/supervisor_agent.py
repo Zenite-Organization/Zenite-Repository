@@ -1,166 +1,101 @@
-from typing import Any, Dict, List, Optional
+﻿from typing import Any, Dict, List, Optional
 import json
 from statistics import median
-
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
 
 
-SYSTEM_ROLE = (
-    "Voce e um supervisor tecnico senior responsavel por sintetizar "
-    "estimativas de esforco provenientes de diferentes estrategias."
+
+SYSTEM_ROLE_SUPERVISOR_HEURISTIC = (
+    "Voce e um supervisor tecnico senior especializado em consolidar multiplas estimativas heuristicas."
 )
 
-INSTRUCTION = """
-Voce recebera:
-- Uma estimativa HEURISTIC (baseline, sem historico)
-- Uma estimativa ANALOGICAL (baseada em historico real)
+INSTRUCTION_SUPERVISOR_HEURISTIC = """
+Voce recebera 4 estimativas heuristicas:
+- p25
+- p50
+- p75
+- p100
 
-Regras obrigatorias:
-1. A estimativa ANALOGICAL e a principal referencia
-2. A HEURISTIC serve como ancora e verificacao de sanidade
-3. Nunca extrapole fora do intervalo definido pelas estimativas recebidas
-4. Se houver forte divergencia, reduza a confianca final
-5. Justifique claramente a decisao
+Cada uma contem:
+- estimated_hours
+- confidence
+- justification
 
-Retorne APENAS um JSON valido com:
-- estimate_hours (int)
-- confidence (float entre 0 e 1)
-- justification (string curta e objetiva)
+====================
+REGRAS
+====================
+
+1. Garanta monotonicidade:
+   p25 <= p50 <= p75 <= p100
+   Se nao estiver ordenado, reordene e reduza confidence final.
+
+2. Use p50 como referencia principal.
+
+3. Se dispersao for baixa:
+   -> final proximo de p50.
+
+4. Se dispersao for moderada:
+   -> incline levemente para p75.
+
+5. Se dispersao for alta:
+   -> reduza confidence.
+   -> evite extremos injustificados.
+
+6. p100 representa pior caso plausivel, nao deve dominar salvo evidencia forte.
+
+====================
+CALCULO SUGERIDO
+====================
+
+final_estimate ~=
+0.60*p50 + 0.30*p75 + 0.10*p25
+
+Ajuste levemente conforme coerencia das justificativas.
+
+====================
+CONFIDENCE
+====================
+
+Reduza confidence quando:
+- Alta divergencia relativa
+- Justificativas conflitantes
+- Issue mal definida
+
+====================
+SAIDA
+====================
+
+Retorne APENAS um JSON valido:
+
+{
+  "estimated_hours": int,
+  "confidence": float (0..1),
+  "justification": "curta e objetiva explicando consolidacao e dispersao"
+}
 
 Nao inclua texto fora do JSON.
 """
 
-SYSTEM_ROLE_HEURISTIC_ENSEMBLE = (
-    "Voce e um supervisor tecnico senior especializado em consolidar "
-    "multiplas estimativas heuristicas de esforco."
-)
-
-INSTRUCTION_HEURISTIC_ENSEMBLE = """
-Voce recebera 3 estimativas HEURISTIC para a mesma issue.
-
-Seu objetivo e consolidar as 3 em uma estimativa final unica.
-
-Regras obrigatorias:
-1. Considere estimate_hours, confidence e justificativas das 3 entradas
-2. Evite extremos se houver divergencia significativa
-3. Se houver alta divergencia, reduza a confidence final
-4. Retorne uma justificativa curta e objetiva explicando a consolidacao
-
-Retorne APENAS um JSON valido com:
-- estimate_hours (int)
-- confidence (float entre 0 e 1)
-- justification (string curta e objetiva)
-
-Nao inclua texto fora do JSON.
-"""
 
 
-def _split_estimations(
-    estimations: List[Dict[str, Any]]
-) -> Dict[str, Dict[str, Any]]:
-    out = {}
-    for e in estimations:
-        src = e.get("source")
-        if src:
-            out[src.lower()] = e
-    return out
+def _weighted_quantile(values: List[float], weights: List[float], q: float) -> float:
+    """Quantil ponderado simples (q em [0,1])."""
+    if not values:
+        return 0.0
+    pairs = sorted(zip(values, weights), key=lambda x: x[0])
+    total_w = sum(weights) if weights else 0.0
+    if total_w <= 0:
+        return median(values)
 
-
-def _compute_final_estimate(
-    heuristic: Dict[str, Any],
-    analogical: Dict[str, Any]
-) -> Dict[str, Any]:
-    h_val = float(heuristic["estimate_hours"])
-    a_val = float(analogical["estimate_hours"])
-
-    low = min(h_val, a_val)
-    high = max(h_val, a_val)
-
-    divergence = abs(a_val - h_val) / max(h_val, 1)
-    final_estimate = a_val
-
-    if divergence > 0.6:
-        final_estimate = (a_val * 0.7) + (h_val * 0.3)
-
-    final_estimate = round(final_estimate)
-    base_conf = (heuristic["confidence"] + analogical["confidence"]) / 2
-
-    if divergence < 0.25:
-        confidence = min(0.9, base_conf + 0.15)
-    elif divergence < 0.5:
-        confidence = base_conf
-    else:
-        confidence = max(0.3, base_conf - 0.2)
-
-    return {
-        "estimate_hours": int(final_estimate),
-        "confidence": round(confidence, 2),
-        "bounds": (low, high),
-        "divergence": round(divergence, 2),
-    }
-
-
-def refine_with_llm(
-    heuristic: Dict[str, Any],
-    analogical: Dict[str, Any],
-    computed: Dict[str, Any],
-    llm: LLMClient
-) -> Dict[str, Any]:
-    payload = {
-        "heuristic": heuristic,
-        "analogical": analogical,
-        "decision": computed,
-    }
-
-    prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
-    prompt += "\n\nDados:\n"
-    prompt += json.dumps(payload, ensure_ascii=False)
-
-    response = llm.send_prompt(
-        prompt,
-        temperature=0.0,
-        max_tokens=300
-    )
-
-    parsed = parse_llm_json_response(response)
-    print("[IA][SUPERVISOR] retorno llm:", parsed)
-    return parsed
-
-
-def combine_estimations(
-    estimations: List[Dict[str, Any]],
-    llm: Optional[LLMClient] = None
-) -> Dict[str, Any]:
-    parts = _split_estimations(estimations)
-
-    heuristic = parts.get("heuristic")
-    analogical = parts.get("analogical")
-
-    if not heuristic or not analogical:
-        raise ValueError("Supervisor requer heuristic e analogical")
-
-    computed = _compute_final_estimate(heuristic, analogical)
-    print(
-        "[IA][SUPERVISOR] heuristic=%s analogical=%s computed=%s"
-        % (heuristic, analogical, computed)
-    )
-
-    if llm:
-        return refine_with_llm(heuristic, analogical, computed, llm)
-
-    fallback = {
-        "estimate_hours": computed["estimate_hours"],
-        "confidence": computed["confidence"],
-        "justification": (
-            "Estimativa baseada principalmente no historico (analogical), "
-            "validada por baseline heuristico. "
-            f"Intervalo observado: {computed['bounds'][0]}-{computed['bounds'][1]}h."
-        )
-    }
-    print("[IA][SUPERVISOR] retorno fallback:", fallback)
-    return fallback
+    target = q * total_w
+    cum = 0.0
+    for v, w in pairs:
+        cum += max(0.0, w)
+        if cum >= target:
+            return v
+    return pairs[-1][0]
 
 
 def _compute_heuristic_ensemble_fallback(
@@ -168,84 +103,179 @@ def _compute_heuristic_ensemble_fallback(
 ) -> Dict[str, Any]:
     values: List[float] = []
     confidences: List[float] = []
-    for estimation in estimations:
+
+    for e in estimations:
+        # hours
         try:
-            values.append(float(estimation.get("estimate_hours", 0)))
+            v = float(e.get("estimated_hours", 0))
         except (TypeError, ValueError):
-            values.append(0.0)
+            v = 0.0
+        if v < 0:
+            v = 0.0
+        values.append(v)
+
+        # confidence
         try:
-            conf = float(estimation.get("confidence", 0.5))
+            c = float(e.get("confidence", 0.5))
         except (TypeError, ValueError):
-            conf = 0.5
-        confidences.append(max(0.0, min(1.0, conf)))
+            c = 0.5
+        confidences.append(max(0.0, min(1.0, c)))
 
     if not values:
         return {
-            "estimate_hours": 8,
+            "estimated_hours": 8,
             "confidence": 0.3,
             "justification": "Fallback supervisor: sem entradas heuristicas.",
         }
 
-    low = min(values)
-    high = max(values)
+    # Ordena por horas (facilita coerencia)
+    pairs = sorted(zip(values, confidences), key=lambda x: x[0])
+    values = [p[0] for p in pairs]
+    confidences = [p[1] for p in pairs]
+
+    low = values[0]
+    high = values[-1]
     spread = high - low
+
+    # Base confidence = media
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
 
-    relative_spread = spread / max(abs(median(values)), 1.0)
-    penalty = min(0.2, relative_spread * 0.1)
-    final_conf = max(0.2, min(0.95, avg_conf - penalty))
+    # Pesos minimos para evitar zerar contribuicoes
+    weights = [max(0.05, c) for c in confidences]
+
+    # Quantis ponderados (aproxima p25/p50/p75 do ensemble)
+    q25 = _weighted_quantile(values, weights, 0.25)
+    q50 = _weighted_quantile(values, weights, 0.50)
+    q75 = _weighted_quantile(values, weights, 0.75)
+
+    # Heuristica "cap p100" (anti-explosao):
+    # se o maior valor estiver muito distante do corpo (q75), ele vira pior-caso e nao entra forte na consolidacao.
+    # Nao muda as entradas, so evita que 1 retorno extremo domine.
+    # p100_eff usado so implicitamente via "high_eff".
+    high_eff = high
+    if q75 > 0:
+        if high > 2.5 * q75:
+            high_eff = 2.5 * q75
+    else:
+        # se q75 ~0 e high alto, claramente e extremo
+        if high > 20:
+            high_eff = 20.0
+
+    # Recalcula spread efetivo para penalidades (nao para "intervalo observado")
+    spread_eff = max(0.0, high_eff - low)
+
+    # Dispersao relativa (com base no q50)
+    denom = max(abs(q50), 1.0)
+    rel_spread = spread_eff / denom
+
+    # =========================
+    # REGIME A: small/normal
+    # =========================
+    # Se o proprio ensemble indica tarefa pequena:
+    # - nao puxe para q75
+    # - use q50 quase puro
+    small_regime = (q50 <= 8.0 and q75 <= 12.0)
+
+    if small_regime:
+        final_hours = q50
+        strategy = "small_regime_p50"
+        # confianca tende a subir se dispersao for pequena
+        small_bonus = 0.05 if rel_spread <= 0.5 else 0.0
+    else:
+        small_bonus = 0.0
+
+        # =========================
+        # REGIME B: geral (misto)
+        # =========================
+        # Mistura p50/p75 conforme dispersao (sem deixar extremo dominar)
+        if rel_spread <= 0.35:
+            final_hours = q50
+            strategy = "p50"
+        elif rel_spread <= 0.90:
+            final_hours = 0.65 * q50 + 0.35 * q75
+            strategy = "mix_p50_p75"
+        else:
+            final_hours = 0.50 * q50 + 0.50 * q75
+            strategy = "cautious_mix"
+
+    # Penalidade de confianca por dispersao (capada)
+    spread_penalty = min(0.35, rel_spread * 0.18)
+
+    # Penalidade adicional se houver "cauda" muito grande (high muito acima de q75)
+    tail_penalty = 0.0
+    if q75 > 0 and high > 3.0 * q75:
+        tail_penalty = 0.07
+
+    final_conf = avg_conf - spread_penalty - tail_penalty + small_bonus
+    final_conf = max(0.20, min(0.95, final_conf))
 
     return {
-        "estimate_hours": int(round(median(values))),
+        "estimated_hours": int(round(final_hours)),
         "confidence": round(final_conf, 2),
         "justification": (
-            "Consolidacao por mediana das heuristicas; "
-            f"intervalo observado {round(low, 2)}-{round(high, 2)}h."
+            "Consolidacao heuristica robusta "
+            f"({strategy}); intervalo observado {round(low, 2)}-{round(high, 2)}h."
         ),
     }
-
-
-def _refine_heuristic_ensemble_with_llm(
-    estimations: List[Dict[str, Any]],
-    computed: Dict[str, Any],
-    llm: LLMClient,
-) -> Dict[str, Any]:
-    payload = {
-        "heuristics": estimations,
-        "decision": computed,
-    }
-
-    prompt = build_system_prompt(
-        SYSTEM_ROLE_HEURISTIC_ENSEMBLE,
-        INSTRUCTION_HEURISTIC_ENSEMBLE,
-    )
-    prompt += "\n\nDados:\n"
-    prompt += json.dumps(payload, ensure_ascii=False)
-
-    response = llm.send_prompt(
-        prompt,
-        temperature=0.0,
-        max_tokens=300,
-    )
-    parsed = parse_llm_json_response(response)
-    print("[IA][SUPERVISOR][HEURISTIC_ENSEMBLE] retorno llm:", parsed)
-    return parsed
-
 
 def combine_heuristic_estimations(
     estimations: List[Dict[str, Any]],
     llm: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
-    computed = _compute_heuristic_ensemble_fallback(estimations)
-    print(
-        "[IA][SUPERVISOR][HEURISTIC_ENSEMBLE] estimations=%s computed=%s"
-        % (estimations, computed)
-    )
+    """
+    Consolida estimativas heuristicas via LLM e aplica fallback deterministico
+    quando houver erro, resposta invalida ou ausencia de modelo.
+    """
+    fallback = _compute_heuristic_ensemble_fallback(estimations)
 
-    if llm:
-        try:
-            return _refine_heuristic_ensemble_with_llm(estimations, computed, llm)
-        except Exception as exc:
-            print("[IA][SUPERVISOR][HEURISTIC_ENSEMBLE] fallback apos erro llm:", exc)
+    if not estimations:
+        return fallback
 
-    return computed
+    if llm is None:
+        llm = LLMClient()
+
+    payload = {
+        "heuristic_estimations": estimations,
+        "fallback_suggestion": fallback,
+    }
+
+    try:
+        messages = [
+            {
+                "role": "system",
+                "content": build_system_prompt(
+                    SYSTEM_ROLE_SUPERVISOR_HEURISTIC,
+                    INSTRUCTION_SUPERVISOR_HEURISTIC,
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+
+        response = llm.invoke(messages)
+        parsed = parse_llm_json_response(response) if response else {}
+        if not isinstance(parsed, dict):
+            return fallback
+
+        estimated_hours = int(
+            round(float(parsed.get("estimated_hours", fallback["estimated_hours"])))
+        )
+        confidence = float(parsed.get("confidence", fallback["confidence"]))
+        justification = str(
+            parsed.get("justification", fallback["justification"])
+        ).strip()
+
+        if estimated_hours < 0:
+            estimated_hours = 0
+        confidence = max(0.0, min(1.0, confidence))
+        if not justification:
+            justification = str(fallback["justification"])
+
+        return {
+            "estimated_hours": estimated_hours,
+            "confidence": round(confidence, 2),
+            "justification": justification,
+        }
+    except Exception:
+        return fallback
+
+

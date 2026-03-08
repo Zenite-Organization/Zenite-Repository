@@ -12,7 +12,7 @@ class LLMClient:
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.1-flash-image-preview",
         temperature: float = 0,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,

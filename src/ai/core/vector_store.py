@@ -13,6 +13,7 @@ class VectorStoreClient:
         text: str,
         namespaces: List[str],
         top_k: int = 8,
+        where: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         """Return raw matches from multiple namespaces."""
         raise NotImplementedError

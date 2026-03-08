@@ -17,6 +17,19 @@ class TestJsonUtils(unittest.TestCase):
         parsed = parse_llm_json_response('resultado:\n{"status":"ok"}\nobrigado')
         self.assertEqual(parsed["status"], "ok")
 
+    def test_parse_content_block_list(self):
+        parsed = parse_llm_json_response(
+            [
+                {
+                    "type": "text",
+                    "text": '{ "estimated_hours": 234.0, "confidence": 0.6, "justification": "ok" }',
+                    "extras": {"signature": "x"},
+                }
+            ]
+        )
+        self.assertEqual(parsed["estimated_hours"], 234.0)
+        self.assertEqual(parsed["confidence"], 0.6)
+
     def test_raises_when_json_not_found(self):
         with self.assertRaises(ValueError):
             parse_llm_json_response("no json here")

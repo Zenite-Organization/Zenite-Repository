@@ -94,7 +94,7 @@ jobs:
     needs: build
 
     env:
-      WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+      GITHUB_WEBHOOK_SECRET: ${{ secrets.GITHUB_WEBHOOK_SECRET }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       APP_ID: ${{ secrets.APP_ID }}
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
@@ -128,7 +128,7 @@ jobs:
       - name: Start container with environment variables
         run: |
           docker run -d -p 8000:8000 --name myapp \
-            -e WEBHOOK_SECRET \
+            -e GITHUB_WEBHOOK_SECRET \
             -e GEMINI_API_KEY \
             -e APP_ID \
             -e APP_PRIVATE_KEY \
@@ -246,7 +246,7 @@ jobs:
             sudo docker stop myapp || true
             sudo docker rm myapp || true
             sudo docker run -d --name myapp -p 8000:8000 \
-              -e WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET }} \
+              -e GITHUB_WEBHOOK_SECRET=${{ secrets.GITHUB_WEBHOOK_SECRET }} \
               -e GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
               -e APP_ID=${{ secrets.APP_ID }} \
               -e APP_PRIVATE_KEY="${{ secrets.APP_PRIVATE_KEY }}" \

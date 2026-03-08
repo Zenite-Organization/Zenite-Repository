@@ -45,7 +45,7 @@ class GitHubAuth:
 
 
 def verify_signature(body_bytes: bytes, x_hub_signature_256: str | None):
-    """Verify webhook HMAC signature using WEBHOOK_SECRET from settings.
+    """Verify webhook HMAC signature using GITHUB_WEBHOOK_SECRET from settings.
     Raises HTTPException on failure.
     """
     from fastapi import HTTPException
@@ -53,7 +53,7 @@ def verify_signature(body_bytes: bytes, x_hub_signature_256: str | None):
     import hashlib
     from config.settings import settings
 
-    secret = settings.WEBHOOK_SECRET
+    secret = settings.GITHUB_WEBHOOK_SECRET
     if not secret:
         return
     if not x_hub_signature_256:

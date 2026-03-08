@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, START, END
 
@@ -14,10 +15,13 @@ from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 
 
 
-class Estimation(TypedDict):
-    estimate_hours: float
+class Estimation(TypedDict, total=False):
+    estimated_hours: float
     confidence: float
     justification: str
+    percentile: str
+    source: str
+    error: str
 
 
 class EstimationState(TypedDict, total=False):
@@ -45,10 +49,16 @@ logger = logging.getLogger(__name__)
 
 def normalize_estimation(res: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "estimate_hours": float(res.get("estimate_hours", 0)),
+        "estimated_hours": float(res.get("estimated_hours", 0)),
         "confidence": float(res.get("confidence", 0.5)),
         "justification": str(res.get("justification", "")),
     }
+
+
+def model_from_strategy(strategy: Optional[str]) -> str:
+    if strategy == "analogical":
+        return "analogical"
+    return "heuristic"
 
 
 # ------------------------------------------------------------
@@ -119,20 +129,71 @@ def analogical_node(state: EstimationState) -> EstimationState:
 
 
 def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
-    llm = LLMClient()
     issue = state["issue"]
-    runs = int(settings.HEURISTIC_ENSEMBLE_RUNS)
-    temperature = float(settings.HEURISTIC_ENSEMBLE_TEMPERATURE)
+
+    agents = [
+        ("p25", 0.25),
+        ("p50", 0.50),
+        ("p75", 0.75),
+        ("p100", 1.00),
+    ]
+    runs = len(agents)
+
+    temperature = float(getattr(settings, "HEURISTIC_ENSEMBLE_TEMPERATURE", 0.0) or 0.0)
+
+    max_concurrency = int(getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", runs) or runs)
+    if max_concurrency <= 0:
+        max_concurrency = runs
+    max_concurrency = max(1, min(max_concurrency, runs))
+
     candidates: List[Estimation] = []
 
-    for _ in range(runs):
-        res = run_heuristic(
+    if runs <= 1 or max_concurrency == 1:
+        for percentile, _weight in agents:
+            llm = LLMClient()
+            res = run_heuristic(
+                issue_context=issue,
+                llm=llm,
+                temperature=temperature,
+                mode=percentile,
+            )
+            normalized = normalize_estimation(res)
+            normalized["percentile"] = percentile
+            candidates.append(normalized)
+        return {"heuristic_candidates": candidates}
+
+    def _run_once(percentile: str) -> Dict[str, Any]:
+        # Create a client per call to avoid shared-state/thread-safety issues.
+        llm = LLMClient()
+        return run_heuristic(
             issue_context=issue,
             llm=llm,
             temperature=temperature,
+            mode=percentile,
         )
-        candidates.append(normalize_estimation(res))
 
+    results: List[Optional[Estimation]] = [None] * runs
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        future_to_idx = {
+            executor.submit(_run_once, agents[idx][0]): idx for idx in range(runs)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                res = future.result()
+            except Exception as exc:
+                res = {
+                    "estimated_hours": 8,
+                    "confidence": 0.3,
+                    "justification": "Falha ao executar heurística; valor padrão aplicado.",
+                    "error": str(exc),
+                }
+            percentile = agents[idx][0]
+            normalized = normalize_estimation(res)
+            normalized["percentile"] = percentile
+            results[idx] = normalized
+
+    candidates = [r for r in results if r is not None]
     return {"heuristic_candidates": candidates}
 
 
@@ -140,7 +201,7 @@ def finalize_analogical_node(state: EstimationState) -> EstimationState:
     analogical = dict(state.get("analogical") or {})
     if not analogical:
         analogical = {
-            "estimate_hours": 0.0,
+            "estimated_hours": 0.0,
             "confidence": 0.0,
             "justification": "Falha na rota analogical.",
         }
@@ -148,26 +209,50 @@ def finalize_analogical_node(state: EstimationState) -> EstimationState:
         justification = str(analogical.get("justification") or "").strip()
         suffix = "Rota analogical escolhida por contexto RAG suficiente."
         analogical["justification"] = f"{justification} {suffix}".strip()
+    analogical["estimation_model"] = model_from_strategy(state.get("strategy"))
     return {"final_estimation": analogical}
 
 
 def supervisor_node(state: EstimationState) -> EstimationState:
-    estimations = []
     candidates = state.get("heuristic_candidates", [])
+    estimations = []
+
     for idx, candidate in enumerate(candidates, start=1):
         h = dict(candidate)
-        h["source"] = f"heuristic_{idx}"
+
+        # Preserve source se jÃ¡ vier do node anterior
+        if "source" not in h:
+            h["source"] = f"heuristic_{idx}"
+
+        # Garante que estimated_hours Ã© numÃ©rico
+        try:
+            h["estimated_hours"] = float(h.get("estimated_hours", 0))
+        except (TypeError, ValueError):
+            h["estimated_hours"] = 0.0
+
+        # Garante confidence vÃ¡lida
+        try:
+            conf = float(h.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            conf = 0.5
+        h["confidence"] = max(0.0, min(1.0, conf))
+
         estimations.append(h)
 
+    # Fallback mÃ­nimo
     if not estimations:
         estimations.append(
             {
-                "source": "heuristic_1",
-                "estimate_hours": 8.0,
+                "source": "heuristic_fallback",
+                "percentile": "p50",
+                "estimated_hours": 8.0,
                 "confidence": 0.3,
-                "justification": "Fallback por falta de candidatos heurísticos.",
+                "justification": "Fallback por falta de candidatos heurÃ­sticos.",
             }
         )
+
+    # ðŸ”¹ Ordena por estimated_hours (garante coerÃªncia para o fallback robusto)
+    estimations = sorted(estimations, key=lambda x: x["estimated_hours"])
 
     llm = LLMClient()
 
@@ -175,6 +260,7 @@ def supervisor_node(state: EstimationState) -> EstimationState:
         estimations=estimations,
         llm=llm,
     )
+    final["estimation_model"] = model_from_strategy(state.get("strategy"))
 
     return {"final_estimation": final}
 
@@ -214,7 +300,7 @@ estimation_graph = graph.compile()
 
 
 # ------------------------------------------------------------
-# API pública
+# API pÃºblica
 # ------------------------------------------------------------
 
 def run_estimation_flow(dto: IssueEstimationDTO) -> EstimationState:
@@ -226,3 +312,4 @@ def run_estimation_flow(dto: IssueEstimationDTO) -> EstimationState:
     }
     
     return estimation_graph.invoke(initial_state)
+
