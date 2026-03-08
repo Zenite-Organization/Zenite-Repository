@@ -45,7 +45,6 @@ Retorne APENAS um JSON válido com:
   "confidence": float (0..1),
   "justification": "string curta explicando: top similares usados, presença/ausência de âncora, como ponderou, e por que a confiança é X"
 }
-Não inclua nenhum texto fora do JSON.
 """
 
 
