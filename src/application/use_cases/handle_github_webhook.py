@@ -7,6 +7,7 @@ from domain.webhook_models import WebhookFlow, WebhookResult, WebhookStatus
 from domain.webhook_rules import SUPPORTED_ACTIONS, SUPPORTED_EVENT, decide_flow
 from web.schemas.github_payloads import GitHubIssuesWebhookPayload
 
+from application.use_cases.index_closed_issue import IndexClosedIssueUseCase
 from application.use_cases.run_issue_estimation import RunIssueEstimationUseCase
 from application.use_cases.run_sprint_planning import RunSprintPlanningUseCase
 
@@ -19,9 +20,11 @@ class HandleGithubWebhookUseCase:
         self,
         issue_estimation_use_case: RunIssueEstimationUseCase | None = None,
         sprint_planning_use_case: RunSprintPlanningUseCase | None = None,
+        index_closed_issue_use_case: IndexClosedIssueUseCase | None = None,
     ):
         self.issue_estimation_use_case = issue_estimation_use_case or RunIssueEstimationUseCase()
         self.sprint_planning_use_case = sprint_planning_use_case or RunSprintPlanningUseCase()
+        self.index_closed_issue_use_case = index_closed_issue_use_case or IndexClosedIssueUseCase()
 
     async def handle(
         self,
@@ -37,6 +40,16 @@ class HandleGithubWebhookUseCase:
                 action=action,
                 flow=WebhookFlow.NONE,
                 details={"reason": "unsupported_event", "supported_event": SUPPORTED_EVENT},
+            )
+
+        if action == "closed" and payload.issue is not None:
+            details = await self.index_closed_issue_use_case.execute(payload)
+            return WebhookResult(
+                status=WebhookStatus.PROCESSED,
+                event=event,
+                action=action,
+                flow=WebhookFlow.NONE,
+                details=details,
             )
 
         if action not in SUPPORTED_ACTIONS:

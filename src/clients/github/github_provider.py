@@ -1,6 +1,9 @@
 from __future__ import annotations
 import datetime as dt
 from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 from config.settings import settings
@@ -68,6 +71,43 @@ class GitHubProjectProvider(ProjectProvider):
     async def add_comment(self, subject_id: str, body: str):
         variables = {"input": {"subjectId": subject_id, "body": body}}
         return await self.graphql.query(ADD_COMMENT_MUTATION, variables)
+
+
+    async def remove_issue_label(self, repo_full_name: str, issue_number: int, label: str) -> dict:
+        """Remove a label from an issue using GitHub REST API.
+
+        Returns:
+            {"removed": bool, "status_code": int, "reason"?: str, "error"?: str}
+        """
+        if "/" not in repo_full_name:
+            raise ValueError(f"Invalid repo_full_name: {repo_full_name}")
+
+        owner, repo = repo_full_name.split("/", 1)
+        label_slug = quote(label, safe="")
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/labels/{label_slug}"
+
+        token = await self.auth.ensure_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(url, headers=headers)
+
+        if resp.status_code in (200, 204):
+            return {"removed": True, "status_code": resp.status_code}
+        if resp.status_code == 404:
+            return {"removed": False, "status_code": 404, "reason": "not_found"}
+        if resp.status_code == 422:
+            return {"removed": False, "status_code": 422, "reason": "unprocessable_entity"}
+
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"Failed to remove label: status={resp.status_code} body={resp.text}") from e
+
+        return {"removed": False, "status_code": resp.status_code, "reason": "unknown"}
 
 
     async def full_resolve_issue(self, issue_node_id: str):
