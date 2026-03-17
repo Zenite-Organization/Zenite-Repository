@@ -142,7 +142,18 @@ class IndexClosedIssueUseCase:
         doc = {"id": vector_id, "namespace": namespace, "text": text, "metadata": metadata}
 
         try:
+            print(
+                "[index_closed_issue] pinecone upsert start "
+                f"repo={repo_full_name} issue={issue_number} namespace={namespace} "
+                f"vector_id={vector_id} text_len={len(text)}",
+                flush=True,
+            )
             result = self.vector_store.upsert([doc])
+            print(
+                "[index_closed_issue] pinecone upsert ok "
+                f"repo={repo_full_name} issue={issue_number} namespace={namespace} vector_id={vector_id}",
+                flush=True,
+            )
             logger.info(
                 "Indexed closed issue repo=%s issue=%s namespace=%s",
                 repo_full_name,
@@ -153,6 +164,11 @@ class IndexClosedIssueUseCase:
                 metadata = dict(metadata)
                 metadata["upsert_result"] = result
         except NotImplementedError:
+            print(
+                "[index_closed_issue] pinecone upsert skipped (read-only) "
+                f"repo={repo_full_name} issue={issue_number} namespace={namespace} vector_id={vector_id}",
+                flush=True,
+            )
             return IndexClosedIssueResult(
                 skipped=True,
                 reason="vector_store_read_only",
@@ -162,6 +178,11 @@ class IndexClosedIssueUseCase:
                 metadata=metadata,
             ).to_dict()
         except Exception as exc:
+            print(
+                "[index_closed_issue] pinecone upsert failed "
+                f"repo={repo_full_name} issue={issue_number} namespace={namespace} vector_id={vector_id} error={exc}",
+                flush=True,
+            )
             logger.exception(
                 "Failed to index closed issue repo=%s issue=%s namespace=%s: %s",
                 repo_full_name,
@@ -180,4 +201,3 @@ class IndexClosedIssueUseCase:
             total_effort_hours=effort_hours,
             metadata=metadata,
         ).to_dict()
-
