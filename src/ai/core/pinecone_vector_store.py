@@ -47,6 +47,55 @@ class PineconeVectorStoreClient(VectorStoreClient):
         )
         return response.data[0].embedding
 
+    def upsert(self, docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not self._ready:
+            return {"skipped": True, "reason": "rag_disabled", "upserted": 0}
+        if not docs:
+            return {"skipped": False, "reason": None, "upserted": 0}
+
+        prepared: List[Dict[str, Any]] = []
+        texts: List[str] = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            doc_id = str(doc.get("id") or "").strip()
+            namespace = str(doc.get("namespace") or "").strip().lower()
+            text = str(doc.get("text") or "").strip()
+            metadata = doc.get("metadata") or {}
+            if not doc_id or not namespace or not text:
+                continue
+            if not isinstance(metadata, dict):
+                metadata = {"value": metadata}
+            prepared.append({"id": doc_id, "namespace": namespace, "text": text, "metadata": metadata})
+            texts.append(text)
+
+        if not prepared:
+            return {"skipped": False, "reason": "no_valid_docs", "upserted": 0}
+
+        response = self._openai.embeddings.create(
+            model=settings.RAG_EMBEDDING_MODEL,
+            input=texts,
+        )
+        vectors = [item.embedding for item in response.data]
+        if len(vectors) != len(prepared):
+            raise RuntimeError(f"Embedding count mismatch: {len(vectors)} != {len(prepared)}")
+
+        by_namespace: Dict[str, List[Dict[str, Any]]] = {}
+        for doc, values in zip(prepared, vectors):
+            ns = doc["namespace"]
+            by_namespace.setdefault(ns, []).append(
+                {"id": doc["id"], "values": values, "metadata": doc["metadata"]}
+            )
+
+        upserted = 0
+        namespace_counts: Dict[str, int] = {}
+        for ns, vecs in by_namespace.items():
+            self._index.upsert(vectors=vecs, namespace=ns)
+            upserted += len(vecs)
+            namespace_counts[ns] = len(vecs)
+
+        return {"skipped": False, "reason": None, "upserted": upserted, "namespaces": namespace_counts}
+
     def semantic_search(
         self,
         text: str,

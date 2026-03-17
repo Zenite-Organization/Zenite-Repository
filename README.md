@@ -70,6 +70,8 @@ Fluxos:
 
 - `Planning` label -> executa planejamento de sprint
 - `Estimate` label -> executa estimativa de esforco
+- apos processar a estimativa, a label `Estimate` e removida automaticamente da issue
+- ao fechar uma issue (`action=closed`), o Zenite gera embedding (titulo+descricao) e faz upsert no Pinecone (RAG)
 - sem labels de controle -> ignora webhook
 
 ## Setup rapido
@@ -87,6 +89,9 @@ pip install -r requirements.txt
 - `GEMINI_API_KEY`
 - `APP_ID`
 - `APP_PRIVATE_KEY` ou `APP_PRIVATE_KEY_path`
+- `PINECONE_API_KEY`
+- `PINECONE_INDEX_NAME`
+- `OPENAI_API_KEY_RAG`
 
 4. Rodar API:
 
