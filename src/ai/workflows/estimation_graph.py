@@ -365,11 +365,18 @@ def run_estimation_flow(dto: IssueEstimationDTO) -> EstimationState:
         "predicted_total_tokens": int(predicted_total_tokens),
     }
     state["token_usage_summary"] = summary
-    print(f"[TokenUsage] summary={summary}")
     if str(os.getenv("TOKEN_USAGE_DEBUG", "")).strip().lower() in ("1", "true", "yes", "y", "on"):
         issue_number = (state.get("issue") or {}).get("issue_number")
-        logger.info("[TokenUsage] issue=%s strategy=%s summary=%s", issue_number, strategy, summary)
-        print(f"[TokenUsage] issue={issue_number} strategy={strategy} summary={summary}")
+        print(
+            "[TokenUsage] issue=%s strategy=%s llm_total=%s rag_embed=%s total=%s"
+            % (
+                issue_number,
+                strategy,
+                summary["predicted_llm_total_tokens"],
+                summary["predicted_rag_embedding_tokens"],
+                summary["predicted_total_tokens"],
+            )
+        )
 
     final_estimation = state.get("final_estimation")
     if isinstance(final_estimation, dict):
