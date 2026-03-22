@@ -2,6 +2,7 @@ from typing import Dict, Any, List
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import format_similar_issues, build_system_prompt
+from ai.core.token_usage import coerce_token_usage
 import json
 
 
@@ -136,9 +137,12 @@ def run_analogical(
     )
     print("prompt final:", prompt)
     response = llm.send_prompt(prompt, temperature=0.0, max_tokens=400)
+    token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))
 
     try:
         parsed = parse_llm_json_response(response)
+        if isinstance(parsed, dict):
+            parsed["token_usage"] = token_usage
         return parsed
     except Exception as e:
         print(f"[IA][ANALOGICAL] erro parse: {e}")
@@ -148,4 +152,5 @@ def run_analogical(
             "justification": "Falha ao interpretar resposta do modelo.",
             "error": str(e),
             "raw_response": response,
+            "token_usage": token_usage,
         }

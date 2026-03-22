@@ -12,4 +12,7 @@ services:
       APP_ID: "${APP_ID}"
       APP_PRIVATE_KEY: "${APP_PRIVATE_KEY}"
       APP_PRIVATE_KEY_PATH: "/app/private_key.pem"
+      PINECONE_API_KEY: "${PINECONE_API_KEY}"
+      PINECONE_INDEX_NAME: "${PINECONE_INDEX_NAME}"
+      OPENAI_API_KEY_RAG: "${OPENAI_API_KEY_RAG}"
     restart: always

@@ -134,16 +134,27 @@ async def main():
     upsert_sql = text("""
         INSERT INTO issue_estimation_validation
           (validation_run_id, project_key, issue_id, issue_number, repository,
-           predicted_hours, confidence, justification, estimation_model, model_version, predicted_at)
+           predicted_hours, confidence, justification, estimation_model, model_version,
+           predicted_llm_prompt_tokens, predicted_llm_completion_tokens, predicted_llm_total_tokens,
+           predicted_rag_embedding_tokens, predicted_total_tokens,
+           predicted_at)
         VALUES
           (:validation_run_id, :project_key, :issue_id, :issue_number, :repository,
-           :predicted_hours, :confidence, :justification, :estimation_model, :model_version, NOW())
+           :predicted_hours, :confidence, :justification, :estimation_model, :model_version,
+           :predicted_llm_prompt_tokens, :predicted_llm_completion_tokens, :predicted_llm_total_tokens,
+           :predicted_rag_embedding_tokens, :predicted_total_tokens,
+           NOW())
         ON DUPLICATE KEY UPDATE
           predicted_hours = VALUES(predicted_hours),
           confidence        = VALUES(confidence),
           justification     = VALUES(justification),
           estimation_model  = VALUES(estimation_model),
           model_version     = VALUES(model_version),
+          predicted_llm_prompt_tokens     = VALUES(predicted_llm_prompt_tokens),
+          predicted_llm_completion_tokens = VALUES(predicted_llm_completion_tokens),
+          predicted_llm_total_tokens      = VALUES(predicted_llm_total_tokens),
+          predicted_rag_embedding_tokens  = VALUES(predicted_rag_embedding_tokens),
+          predicted_total_tokens          = VALUES(predicted_total_tokens),
           predicted_at      = NOW()
     """)
 
@@ -154,6 +165,7 @@ async def main():
             dto = build_dto_from_row(r)
             state = await svc.run(dto)
             final_estimation = state.get("final_estimation", {}) or {}
+            usage = state.get("token_usage_summary", {}) or {}
             estimation_model = (
                 final_estimation.get("estimation_model")
                 or normalize_estimation_model(state.get("strategy"))
@@ -173,6 +185,12 @@ async def main():
                 "justification": final_estimation.get("justification", ""),
                 "estimation_model": estimation_model,
                 "model_version": model_version,
+
+                "predicted_llm_prompt_tokens": int(usage.get("predicted_llm_prompt_tokens") or 0),
+                "predicted_llm_completion_tokens": int(usage.get("predicted_llm_completion_tokens") or 0),
+                "predicted_llm_total_tokens": int(usage.get("predicted_llm_total_tokens") or 0),
+                "predicted_rag_embedding_tokens": int(usage.get("predicted_rag_embedding_tokens") or 0),
+                "predicted_total_tokens": int(usage.get("predicted_total_tokens") or 0),
             })
 
             print(f"[OK] issue_id={r['id']} predicted_hours={predicted_hours}")

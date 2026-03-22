@@ -20,6 +20,7 @@ class Retriever:
 
     def __init__(self, vector_store):
         self.vs = vector_store
+        self.last_rag_usage: Dict[str, Any] = {"embedding_tokens": 0, "embedding_calls": 0}
 
     @staticmethod
     def _build_query(issue_payload: Dict[str, Any]) -> str:
@@ -133,14 +134,29 @@ class Retriever:
         stop_reason = "no_more_namespaces"
         where = self._pinecone_where_filter()
 
+        embedding_tokens_total = 0
+        embedding_calls = 0
+
         for namespace in namespace_order:
-            raw = self.vs.semantic_search(
-                query_text,
-                namespaces=[namespace],
-                top_k=top_k,
-                where=where,
-            )
-            raw = self._filter_description_length(raw)
+            try:
+                raw = self.vs.semantic_search(
+                    query_text,
+                    namespaces=[namespace],
+                    top_k=top_k,
+                    where=where,
+                )
+            except TypeError:
+                # Backward-compatibility with test doubles / older interfaces.
+                raw = self.vs.semantic_search(
+                    query_text,
+                    namespaces=[namespace],
+                    top_k=top_k,
+                )
+            embedding_calls += 1
+            try:
+                embedding_tokens_total += int(getattr(self.vs, "last_embedding_tokens", 0) or 0)
+            except Exception:
+                pass
             queried_namespaces.append(namespace)
             all_raw_matches.extend(raw)
 
@@ -159,6 +175,11 @@ class Retriever:
 
             if len(qualified_raw_matches) >= target_size:
                 break
+
+        self.last_rag_usage = {
+            "embedding_tokens": max(0, int(embedding_tokens_total)),
+            "embedding_calls": max(0, int(embedding_calls)),
+        }
 
         if (
             stop_reason != "filled_target"

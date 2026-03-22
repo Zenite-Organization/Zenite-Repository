@@ -14,7 +14,23 @@ class PineconeVectorStoreClient(VectorStoreClient):
         self._pc = None
         self._index = None
         self._openai = None
+        self.last_embedding_tokens: int = 0
         self._bootstrap()
+
+    def _update_last_embedding_tokens(self, response: Any) -> None:
+        tokens = 0
+        usage = getattr(response, "usage", None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get("usage")
+        if usage is not None:
+            try:
+                tokens = int(getattr(usage, "total_tokens", None) or getattr(usage, "prompt_tokens", None) or 0)
+            except Exception:
+                try:
+                    tokens = int((usage.get("total_tokens") or usage.get("prompt_tokens") or 0) if isinstance(usage, dict) else 0)
+                except Exception:
+                    tokens = 0
+        self.last_embedding_tokens = max(0, int(tokens or 0))
 
     def _bootstrap(self) -> None:
         api_key = settings.PINECONE_API_KEY
@@ -45,6 +61,7 @@ class PineconeVectorStoreClient(VectorStoreClient):
             model=settings.RAG_EMBEDDING_MODEL,
             input=text,
         )
+        self._update_last_embedding_tokens(response)
         return response.data[0].embedding
 
     def upsert(self, docs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -76,6 +93,7 @@ class PineconeVectorStoreClient(VectorStoreClient):
             model=settings.RAG_EMBEDDING_MODEL,
             input=texts,
         )
+        self._update_last_embedding_tokens(response)
         vectors = [item.embedding for item in response.data]
         if len(vectors) != len(prepared):
             raise RuntimeError(f"Embedding count mismatch: {len(vectors)} != {len(prepared)}")
@@ -103,6 +121,8 @@ class PineconeVectorStoreClient(VectorStoreClient):
         top_k: int = 8,
         where: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
+        # Reset so callers don't accidentally read stale values when no embedding happens.
+        self.last_embedding_tokens = 0
         if not self._ready:
             return []
         if not text.strip() or not namespaces:
