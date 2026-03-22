@@ -45,6 +45,8 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
             issue_id = str(issue_id)
 
     total_effort_hours = metadata.get("total_effort_hours")
+    if total_effort_hours is None:
+        total_effort_hours = _minutes_to_hours(metadata.get("total_effort_minutes"))
 
     title = _extract_text(metadata, ["issue_title", "title", "summary"])
     description = _extract_text(

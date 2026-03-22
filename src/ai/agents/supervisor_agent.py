@@ -229,6 +229,7 @@ def combine_heuristic_estimations(
     fallback = _compute_heuristic_ensemble_fallback(estimations)
 
     if not estimations:
+        fallback["token_usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         return fallback
 
     if llm is None:
@@ -252,8 +253,14 @@ def combine_heuristic_estimations(
         ]
 
         response = llm.invoke(messages)
+        token_usage = getattr(llm, "last_token_usage", None) or {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
         parsed = parse_llm_json_response(response) if response else {}
         if not isinstance(parsed, dict):
+            fallback["token_usage"] = token_usage
             return fallback
 
         estimated_hours = int(
@@ -274,8 +281,10 @@ def combine_heuristic_estimations(
             "estimated_hours": estimated_hours,
             "confidence": round(confidence, 2),
             "justification": justification,
+            "token_usage": token_usage,
         }
     except Exception:
+        fallback["token_usage"] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         return fallback
 
 

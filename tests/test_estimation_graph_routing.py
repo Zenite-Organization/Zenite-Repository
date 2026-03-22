@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from ai.workflows import estimation_graph as eg
 from config.settings import settings
+from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 
 
 class _FakeRetrieverSufficient:
@@ -115,6 +116,103 @@ class TestEstimationGraphRouting(unittest.TestCase):
                     [e["source"] for e in estimations],
                     ["heuristic_1", "heuristic_2", "heuristic_3", "heuristic_4"],
                 )
+        finally:
+            settings.RAG_MIN_HITS_MAIN = prev_min_hits
+            settings.RAG_MIN_SCORE_MAIN = prev_min_score
+            settings.HEURISTIC_ENSEMBLE_TEMPERATURE = prev_temp
+            settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = prev_concurrency
+            eg.vector_store = original_vs
+
+    def test_run_estimation_flow_returns_token_usage_summary(self):
+        prev_min_hits = settings.RAG_MIN_HITS_MAIN
+        prev_min_score = settings.RAG_MIN_SCORE_MAIN
+        prev_temp = settings.HEURISTIC_ENSEMBLE_TEMPERATURE
+        prev_concurrency = getattr(settings, "HEURISTIC_ENSEMBLE_MAX_CONCURRENCY", None)
+        settings.RAG_MIN_HITS_MAIN = 2
+        settings.RAG_MIN_SCORE_MAIN = 0.75
+        settings.HEURISTIC_ENSEMBLE_TEMPERATURE = 0.6
+        settings.HEURISTIC_ENSEMBLE_MAX_CONCURRENCY = 1
+
+        original_vs = eg.vector_store
+        eg.vector_store = _NoTechVectorStore()
+        try:
+            dto = IssueEstimationDTO(
+                issue_number=1,
+                repository="x/y",
+                title="A",
+                description="B",
+                labels=[],
+                assignees=[],
+                state="open",
+                is_open=False,
+                comments_count=0,
+                age_in_days=0,
+                author_login="bot",
+                author_role="NONE",
+                repo_language=None,
+                repo_size=None,
+                issue_type="unknown",
+            )
+
+            heuristic_outputs = [
+                {
+                    "estimated_hours": 6,
+                    "confidence": 0.6,
+                    "justification": "h1",
+                    "percentile": "p25",
+                    "token_usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                },
+                {
+                    "estimated_hours": 8,
+                    "confidence": 0.7,
+                    "justification": "h2",
+                    "percentile": "p50",
+                    "token_usage": {"prompt_tokens": 11, "completion_tokens": 6, "total_tokens": 17},
+                },
+                {
+                    "estimated_hours": 10,
+                    "confidence": 0.8,
+                    "justification": "h3",
+                    "percentile": "p75",
+                    "token_usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+                },
+                {
+                    "estimated_hours": 12,
+                    "confidence": 0.75,
+                    "justification": "h4",
+                    "percentile": "p100",
+                    "token_usage": {"prompt_tokens": 13, "completion_tokens": 8, "total_tokens": 21},
+                },
+            ]
+            supervisor_out = {
+                "estimated_hours": 8,
+                "confidence": 0.77,
+                "justification": "consolidado",
+                "token_usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+            }
+
+            with patch.object(eg, "Retriever", _FakeRetrieverInsufficient), patch.object(
+                eg, "run_analogical"
+            ) as analogical_mock, patch.object(
+                eg, "run_heuristic", side_effect=heuristic_outputs
+            ) as heuristic_mock, patch.object(
+                eg, "combine_heuristic_estimations", return_value=supervisor_out
+            ) as combine_mock:
+                state = eg.run_estimation_flow(dto)
+
+                self.assertEqual(state["strategy"], "heuristic_ensemble")
+                usage = state.get("token_usage_summary")
+                self.assertIsInstance(usage, dict)
+
+                self.assertEqual(usage["predicted_llm_prompt_tokens"], 10 + 11 + 12 + 13 + 20)
+                self.assertEqual(usage["predicted_llm_completion_tokens"], 5 + 6 + 7 + 8 + 10)
+                self.assertEqual(usage["predicted_llm_total_tokens"], 15 + 17 + 19 + 21 + 30)
+                self.assertEqual(usage["predicted_rag_embedding_tokens"], 0)
+                self.assertEqual(usage["predicted_total_tokens"], usage["predicted_llm_total_tokens"])
+
+                self.assertEqual(heuristic_mock.call_count, 4)
+                analogical_mock.assert_not_called()
+                combine_mock.assert_called_once()
         finally:
             settings.RAG_MIN_HITS_MAIN = prev_min_hits
             settings.RAG_MIN_SCORE_MAIN = prev_min_score

@@ -13,6 +13,9 @@ def format_similar_issues(similar: List[Dict]) -> str:
         est = it.get("total_effort_hours")
         if not title or est is None:
             continue
+        lines.append(f"{idx}. {title} | est: {est}h")
+        idx += 1
+        continue
         score = it.get("score", 0)
         type = it.get("issue_type", "unknown")
         desc_raw = it.get('description', '')
