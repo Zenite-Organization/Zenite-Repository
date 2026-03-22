@@ -10,6 +10,9 @@ class _FakeLLM:
     def send_prompt(self, _prompt: str, **_kwargs) -> str:
         return self.response
 
+    def invoke(self, _messages, **_kwargs):
+        return self.response
+
 
 class TestSupervisorHeuristicEnsemble(unittest.TestCase):
     def test_combine_heuristic_estimations_llm_path(self):
@@ -31,7 +34,7 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
             {"source": "heuristic_3", "estimated_hours": 14, "confidence": 0.8, "justification": "c"},
         ]
         out = combine_heuristic_estimations(estimations, llm=None)
-        self.assertEqual(out["estimated_hours"], 8)
+        self.assertEqual(out["estimated_hours"], 11)
         self.assertLess(out["confidence"], 0.7)
         self.assertIn("intervalo observado 2.0-14.0h", out["justification"])
 

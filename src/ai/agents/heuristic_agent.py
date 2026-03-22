@@ -2,6 +2,7 @@ from typing import Dict, Any
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
+from ai.core.token_usage import coerce_token_usage
 import json
 
 
@@ -282,6 +283,7 @@ def run_heuristic(
         temperature=float(temperature),
         max_tokens=350
     )
+    token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))
 
     try:
         parsed = parse_llm_json_response(response)
@@ -290,6 +292,9 @@ def run_heuristic(
         # opcional: garantir que o percentile volte consistente
         if "percentile" not in parsed:
             parsed["percentile"] = mode
+
+        if isinstance(parsed, dict):
+            parsed["token_usage"] = token_usage
 
         return parsed
 
@@ -303,5 +308,6 @@ def run_heuristic(
             "confidence": 0.3,
             "justification": "Falha ao interpretar resposta do modelo; valor padrão aplicado.",
             "error": str(e),
-            "raw_response": response
+            "raw_response": response,
+            "token_usage": token_usage,
         }
