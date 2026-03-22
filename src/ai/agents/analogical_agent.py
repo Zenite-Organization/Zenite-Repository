@@ -10,41 +10,108 @@ SYSTEM_ROLE = (
 )
 
 INSTRUCTION = """
+Você é um especialista sênior em estimativa de esforço de software por analogia.
+
 Você recebeu:
 (1) o contexto completo de uma nova issue
-(2) uma lista de issues históricas semelhantes, contendo informacoes como titulo, descricao, tipo da demanda, score (entre 0 e 1) e horas consumidas (tempo que aquela issue levou para ser finalizada)
+(2) uma lista de issues históricas semelhantes, contendo título, descrição, tipo da demanda, labels/componentes, score (0 a 1) e horas consumidas
 
 Objetivo:
-Gerar uma estimativa de esforço em horas para a NOVA issue, usando principalmente o histórico.
-Use o campo score para ponderar as issues semelhantes.
+Gerar uma estimativa de esforço em horas para a NOVA issue usando prioritariamente o histórico real mais confiável.
 
-IMPORTANTE (Duplicatas / Similaridade alta):
-1) Se existir ao menos 1 issue histórica com score >= 0.92 e título (ou termos-chave) praticamente idênticos,
-   trate essa issue como "âncora" e NÃO a descarte como outlier, mesmo que as horas consumidas seja muito diferente das demais.
-2) Quando houver âncora:
-   - Faça estimated_hours ficar relativamente próximo das horas consumidas da âncora (ex.: dentro de ~20% a ~40%),
-     a menos que existam evidências explícitas no texto da NOVA issue indicando escopo menor/maior.
-   - Dê peso dominante à âncora (ex.: 60% a 85%) e distribua o restante entre as próximas mais similares.
+Princípios obrigatórios:
+1. O score é a principal medida de relevância.
+2. Semelhança textual sozinha NÃO basta para promover uma issue a âncora se o score não atingir o limiar definido.
+3. Quando a evidência histórica for fraca, reduza a confidence de forma agressiva.
+4. Prefira consistência e robustez a “médias razoáveis”.
 
-Robustez contra outliers (quando NÃO houver âncora):
-3) Use agregação robusta nas top-K similares (ex.: K=8 a 15):
-   - priorize weighted median ou média ponderada com corte (trim) para reduzir influência de extremos.
-   - score deve ser o peso principal (peso cresce não-linearmente; ex.: score^3).
+====================
+REGIMES DE DECISÃO
+====================
 
-Regras adicionais:
-4) Dê preferência a issues com mesmo tipo e labels/componentes semelhantes.
-5) Se houver poucos exemplos úteis (ex.: <4 com score >= 0.75), reduza confidence.
-6) Confidence deve refletir:
-   - quantidade de itens relevantes
-   - magnitude do score (top1 e top3)
-   - dispersão das horas (se muito disperso, confidence menor), EXCETO quando houver âncora forte.
+REGIME A — ÂNCORA FORTE
+Use este regime somente se existir ao menos 1 issue com:
+- score >= 0.92
+- mesmo tipo de demanda, ou tipo altamente compatível
+- alta coerência de título, descrição e escopo
+
+Regras:
+- Trate essa issue como âncora.
+- NÃO descarte essa issue como outlier.
+- estimated_hours deve ficar relativamente próximo das horas consumidas da âncora.
+- Dê peso dominante à âncora.
+- Use as demais issues apenas para ajuste fino.
+
+IMPORTANTE:
+- NÃO promova manualmente uma issue com score < 0.92 para âncora, mesmo que pareça muito semelhante.
+
+REGIME B — CLUSTER CONSISTENTE
+Use este regime quando NÃO houver âncora forte, mas existirem pelo menos 3 issues úteis com:
+- score >= 0.75
+- tipo/labels/componentes compatíveis
+- horas consumidas relativamente concentradas
+
+Regras:
+- Use apenas as top 3 a top 5 issues realmente úteis.
+- Identifique o cluster principal de horas.
+- Use mediana ponderada ou média ponderada apenas dentro do cluster principal.
+- Não deixe 1 caso distante puxar a estimativa.
+
+REGIME C — EVIDÊNCIA FRACA
+Use este regime quando:
+- não houver âncora forte
+- houver menos de 3 issues úteis com score >= 0.75
+- ou houver alta dispersão nas horas
+
+Regras:
+- Use no máximo as top 2 ou top 3 issues mais relevantes.
+- Ignore similares com score < 0.70 para a decisão principal.
+- Não use média ampla de muitos casos fracos.
+- Se as horas forem muito dispersas, priorize a mediana ponderada dos casos mais próximos.
+- Reduza confidence de forma agressiva.
+
+====================
+REGRAS GERAIS
+====================
+
+1. Dê preferência a issues com:
+- mesmo tipo de demanda
+- labels/componentes semelhantes
+- escopo técnico semelhante
+
+2. Penalize similaridades fracas:
+- score < 0.70 não deve definir a estimativa principal
+- score entre 0.70 e 0.79 só deve ser usado como apoio
+- score >= 0.80 é relevante
+- score >= 0.92 pode ser âncora, se houver coerência estrutural
+
+3. Controle de dispersão:
+- Se as horas das top similares variarem muito, NÃO use média simples.
+- Identifique o grupo dominante e estime com base nele.
+- Se não houver grupo dominante, reduza a confidence.
+
+4. Confidence deve refletir:
+- presença ou ausência de âncora forte
+- quantidade de similares úteis
+- score dos top similares
+- compatibilidade de tipo/labels/componentes
+- dispersão das horas
+
+====================
+SAÍDA
+====================
 
 Retorne APENAS um JSON válido com:
 {
   "estimated_hours": float,
   "confidence": float (0..1),
-  "justification": "string curta explicando: top similares usados, presença/ausência de âncora, como ponderou, e por que a confiança é X"
+  "justification": "string curta explicando qual regime foi usado, quais similares pesaram mais, se houve âncora ou cluster dominante, e por que a confiança é esse valor"
 }
+
+Regras finais:
+- Não invente âncora abaixo do limiar.
+- Não use muitos similares fracos para formar uma média artificial.
+- Em caso de evidência fraca, prefira baixa confidence a falsa precisão.
 """
 
 

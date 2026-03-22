@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class Retriever:
+    MIN_DESCRIPTION_LENGTH = 100
+
     def __init__(self, vector_store):
         self.vs = vector_store
 
@@ -59,6 +61,16 @@ class Retriever:
     ) -> List[Dict[str, Any]]:
         return [m for m in matches if self._safe_score(m) >= float(min_score)]
 
+    @classmethod
+    def _filter_description_length(cls, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered: List[Dict[str, Any]] = []
+        for match in matches:
+            metadata = match.get("metadata") or {}
+            description = metadata.get("description")
+            if isinstance(description, str) and len(description.strip()) >= cls.MIN_DESCRIPTION_LENGTH:
+                filtered.append(match)
+        return filtered
+
     @staticmethod
     def _dedupe_key(match: Dict[str, Any]) -> str:
         metadata = match.get("metadata") or {}
@@ -71,7 +83,7 @@ class Retriever:
     def _pinecone_where_filter() -> Dict[str, Any]:
         return {
             "$and": [
-                {"total_effort_hours": {"$gte": 1, "$lte": 300}},
+                {"total_effort_hours": {"$gte": 1, "$lte": 40}},
                 {"description": {"$exists": True, "$ne": ""}},
             ]
         }
@@ -128,6 +140,7 @@ class Retriever:
                 top_k=top_k,
                 where=where,
             )
+            raw = self._filter_description_length(raw)
             queried_namespaces.append(namespace)
             all_raw_matches.extend(raw)
 
