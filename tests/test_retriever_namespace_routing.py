@@ -4,7 +4,7 @@ from ai.core.retriever import Retriever
 from config.settings import settings
 
 
-def _match(namespace: str, idx: int, score: float):
+def _match(namespace: str, idx: int, score: float, description: str | None = None):
     project_key = namespace.replace("_issues", "")
     return {
         "id": f"{namespace}:{idx}",
@@ -16,7 +16,7 @@ def _match(namespace: str, idx: int, score: float):
             "project_key": project_key.upper(),
             "issue_key": f"{project_key.upper()}-{idx}",
             "issue_title": f"{namespace} issue {idx}",
-            "description": "desc",
+            "description": description or ("a" * 100),
             "total_effort_minutes": 60,
         },
     }

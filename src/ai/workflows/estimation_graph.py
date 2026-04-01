@@ -21,6 +21,7 @@ class Estimation(TypedDict, total=False):
     estimated_hours: float
     confidence: float
     justification: str
+    mode: str
     percentile: str
     source: str
     error: str
@@ -141,10 +142,10 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
     issue = state["issue"]
 
     agents = [
-        ("p25", 0.25),
-        ("p50", 0.50),
-        ("p75", 0.75),
-        ("p100", 1.00),
+    ("scope", 0.30),
+    ("complexity", 0.30),
+    ("uncertainty", 0.15),
+    ("agile_fit", 0.25),
     ]
     runs = len(agents)
 
@@ -158,27 +159,28 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
     candidates: List[Estimation] = []
 
     if runs <= 1 or max_concurrency == 1:
-        for percentile, _weight in agents:
+        for mode_name, _weight in agents:
             llm = LLMClient()
             res = run_heuristic(
                 issue_context=issue,
                 llm=llm,
                 temperature=temperature,
-                mode=percentile,
+                mode=mode_name,
             )
             normalized = normalize_estimation(res)
-            normalized["percentile"] = percentile
+            normalized["mode"] = str(normalized.get("mode") or mode_name)
+            normalized["percentile"] = str(normalized.get("percentile") or mode_name)
             candidates.append(normalized)
         return {"heuristic_candidates": candidates}
 
-    def _run_once(percentile: str) -> Dict[str, Any]:
+    def _run_once(mode_name: str) -> Dict[str, Any]:
         # Create a client per call to avoid shared-state/thread-safety issues.
         llm = LLMClient()
         return run_heuristic(
             issue_context=issue,
             llm=llm,
             temperature=temperature,
-            mode=percentile,
+            mode=mode_name,
         )
 
     results: List[Optional[Estimation]] = [None] * runs
@@ -197,9 +199,10 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
                     "justification": "Falha ao executar heurística; valor padrão aplicado.",
                     "error": str(exc),
                 }
-            percentile = agents[idx][0]
+            mode_name = agents[idx][0]
             normalized = normalize_estimation(res)
-            normalized["percentile"] = percentile
+            normalized["mode"] = str(normalized.get("mode") or mode_name)
+            normalized["percentile"] = str(normalized.get("percentile") or mode_name)
             results[idx] = normalized
 
     candidates = [r for r in results if r is not None]
@@ -253,7 +256,8 @@ def supervisor_node(state: EstimationState) -> EstimationState:
         estimations.append(
             {
                 "source": "heuristic_fallback",
-                "percentile": "p50",
+                "mode": "complexity",
+                "percentile": "complexity",
                 "estimated_hours": 8.0,
                 "confidence": 0.3,
                 "justification": "Fallback por falta de candidatos heurÃ­sticos.",

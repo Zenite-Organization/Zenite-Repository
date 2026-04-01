@@ -1,118 +1,115 @@
 from typing import Dict, Any, List
+
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import format_similar_issues, build_system_prompt
 from ai.core.token_usage import coerce_token_usage
+
 import json
 
+AGILE_HOURS_LIMIT = 40
 
 SYSTEM_ROLE = (
-    "Você é um especialista sênior em estimativa de esforço de software por analogia."
+    "Você é um especialista sênior em estimativa de esforço de software por analogia, "
+    "com foco em boas práticas ágeis e decomposição de trabalho."
 )
 
-INSTRUCTION = """
-Você é um especialista sênior em estimativa de esforço de software por analogia.
-
+INSTRUCTION = f"""
 Você recebeu:
 (1) o contexto completo de uma nova issue
-(2) uma lista de issues históricas semelhantes, contendo título, descrição, tipo da demanda, labels/componentes, score (0 a 1) e horas consumidas
+
+(2) uma lista de issues históricas semelhantes, contendo informações como título, descrição,
+tipo da demanda, score (entre 0 e 1) e horas consumidas.
+
+Contexto importante do sistema:
+- As issues históricas foram filtradas para manter somente exemplos com até {AGILE_HOURS_LIMIT} horas.
+- Isso foi feito para alinhar o histórico às boas práticas ágeis, priorizando tarefas pequenas, refinadas e previsíveis.
+- Portanto, a sua estimativa deve tender naturalmente para a faixa de 1 a {AGILE_HOURS_LIMIT} horas.
 
 Objetivo:
-Gerar uma estimativa de esforço em horas para a NOVA issue usando prioritariamente o histórico real mais confiável.
+Gerar uma estimativa de esforço em horas para a NOVA issue, usando principalmente o histórico.
 
-Princípios obrigatórios:
-1. O score é a principal medida de relevância.
-2. Semelhança textual sozinha NÃO basta para promover uma issue a âncora se o score não atingir o limiar definido.
-3. Quando a evidência histórica for fraca, reduza a confidence de forma agressiva.
-4. Prefira consistência e robustez a “médias razoáveis”.
+Use o campo score para ponderar as issues semelhantes.
 
 ====================
-REGIMES DE DECISÃO
+REGRAS DE ANALOGIA
 ====================
 
-REGIME A — ÂNCORA FORTE
-Use este regime somente se existir ao menos 1 issue com:
-- score >= 0.92
-- mesmo tipo de demanda, ou tipo altamente compatível
-- alta coerência de título, descrição e escopo
+1) Se existir ao menos 1 issue histórica com score >= 0.92 e título (ou termos-chave) praticamente idênticos,
+trate essa issue como "âncora" e NÃO a descarte como outlier, mesmo que as horas consumidas sejam diferentes das demais.
 
-Regras:
-- Trate essa issue como âncora.
-- NÃO descarte essa issue como outlier.
-- estimated_hours deve ficar relativamente próximo das horas consumidas da âncora.
-- Dê peso dominante à âncora.
-- Use as demais issues apenas para ajuste fino.
+2) Quando houver âncora:
+- Faça estimated_hours ficar relativamente próximo das horas consumidas da âncora,
+  a menos que existam evidências explícitas no texto da NOVA issue indicando escopo menor ou maior.
+- Dê peso dominante à âncora e distribua o restante entre as próximas mais similares.
 
-IMPORTANTE:
-- NÃO promova manualmente uma issue com score < 0.92 para âncora, mesmo que pareça muito semelhante.
+3) Quando NÃO houver âncora:
+- Use agregação robusta nas top-K similares (ex.: K=8 a 15).
+- Priorize weighted median ou média ponderada com corte (trim) para reduzir influência de extremos.
+- O score deve ser o peso principal (peso pode crescer de forma não linear, como score^3).
 
-REGIME B — CLUSTER CONSISTENTE
-Use este regime quando NÃO houver âncora forte, mas existirem pelo menos 3 issues úteis com:
-- score >= 0.75
-- tipo/labels/componentes compatíveis
-- horas consumidas relativamente concentradas
-
-Regras:
-- Use apenas as top 3 a top 5 issues realmente úteis.
-- Identifique o cluster principal de horas.
-- Use mediana ponderada ou média ponderada apenas dentro do cluster principal.
-- Não deixe 1 caso distante puxar a estimativa.
-
-REGIME C — EVIDÊNCIA FRACA
-Use este regime quando:
-- não houver âncora forte
-- houver menos de 3 issues úteis com score >= 0.75
-- ou houver alta dispersão nas horas
-
-Regras:
-- Use no máximo as top 2 ou top 3 issues mais relevantes.
-- Ignore similares com score < 0.70 para a decisão principal.
-- Não use média ampla de muitos casos fracos.
-- Se as horas forem muito dispersas, priorize a mediana ponderada dos casos mais próximos.
-- Reduza confidence de forma agressiva.
-
-====================
-REGRAS GERAIS
-====================
-
-1. Dê preferência a issues com:
-- mesmo tipo de demanda
+4) Dê preferência a issues com:
+- mesmo tipo
 - labels/componentes semelhantes
-- escopo técnico semelhante
+- contexto técnico parecido
+- escopo comparável
 
-2. Penalize similaridades fracas:
-- score < 0.70 não deve definir a estimativa principal
-- score entre 0.70 e 0.79 só deve ser usado como apoio
-- score >= 0.80 é relevante
-- score >= 0.92 pode ser âncora, se houver coerência estrutural
+5) Como o histórico foi filtrado em até {AGILE_HOURS_LIMIT}h, trate essa faixa como regime normal.
+Isso significa:
+- tarefas pequenas e médias devem permanecer dentro desse intervalo
+- não extrapole horas sem forte evidência textual
+- evite superestimar por cautela genérica
 
-3. Controle de dispersão:
-- Se as horas das top similares variarem muito, NÃO use média simples.
-- Identifique o grupo dominante e estime com base nele.
-- Se não houver grupo dominante, reduza a confidence.
+====================
+TRATAMENTO DE ISSUES GRANDES
+====================
 
-4. Confidence deve refletir:
-- presença ou ausência de âncora forte
-- quantidade de similares úteis
-- score dos top similares
-- compatibilidade de tipo/labels/componentes
+6) É possível que a NOVA issue pareça maior do que o padrão ágil desejado.
+Considere que a issue provavelmente exige mais de {AGILE_HOURS_LIMIT}h apenas se houver evidências textuais claras, como:
+- múltiplos sistemas ou módulos relevantes
+- migração ampla
+- refatoração extensa transversal
+- rollout grande
+- dependências numerosas
+- investigação elevada somada à implementação
+- escopo claramente épico ou agregador
+
+7) Se concluir que a issue ultrapassa {AGILE_HOURS_LIMIT}h:
+- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
+- MAS deve deixar explícito na justification que a issue está acima do limite recomendado
+- e deve orientar o usuário a refinar/quebrar a demanda em duas ou mais issues menores
+
+8) Se não houver evidência clara de grande porte, mantenha a estimativa em até {AGILE_HOURS_LIMIT}h.
+
+====================
+CONFIDENCE
+====================
+
+9) Confidence deve refletir:
+- quantidade de itens relevantes
+- magnitude do score (top1 e top3)
 - dispersão das horas
+- clareza textual da nova issue
+- presença ou ausência de âncora forte
+
+10) Se houver poucos exemplos úteis (ex.: <4 com score >= 0.75), reduza confidence.
 
 ====================
 SAÍDA
 ====================
 
 Retorne APENAS um JSON válido com:
-{
+{{
   "estimated_hours": float,
-  "confidence": float (0..1),
-  "justification": "string curta explicando qual regime foi usado, quais similares pesaram mais, se houve âncora ou cluster dominante, e por que a confiança é esse valor"
-}
+  "confidence": float,
+  "justification": "string curta explicando os similares usados, presença ou ausência de âncora, como ponderou, e se a issue deve ser quebrada quando ultrapassar {AGILE_HOURS_LIMIT}h"
+}}
 
 Regras finais:
-- Não invente âncora abaixo do limiar.
-- Não use muitos similares fracos para formar uma média artificial.
-- Em caso de evidência fraca, prefira baixa confidence a falsa precisão.
+- Não inclua texto fora do JSON.
+- Não use markdown.
+- Prefira estimativas aderentes ao ágil.
+- Só ultrapasse {AGILE_HOURS_LIMIT}h com forte evidência textual.
 """
 
 
@@ -123,27 +120,53 @@ def run_analogical(
     llm: LLMClient,
 ) -> Dict[str, Any]:
     system_prompt = build_system_prompt(SYSTEM_ROLE, INSTRUCTION)
-
     issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
-
-    # print("similar issue:", similar_issues)
 
     prompt = (
         system_prompt
-        + "\n\n##NOVA ISSUE\n"
+        + "\n\n## NOVA ISSUE\n"
         + issue_text
-        + "\n\n##ISSUES HISTORICAS SIMILARES\n"
+        + "\n\n## ISSUES HISTORICAS SIMILARES\n"
         + format_similar_issues(similar_issues)
     )
-    print("prompt final:", prompt)
-    response = llm.send_prompt(prompt, temperature=0.0, max_tokens=400)
+
+    print("[IA][ANALOGICAL] prompt final:", prompt)
+
+    response = llm.send_prompt(prompt, temperature=0.0, max_tokens=450)
     token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))
 
     try:
         parsed = parse_llm_json_response(response)
-        if isinstance(parsed, dict):
-            parsed["token_usage"] = token_usage
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Resposta do modelo não é um JSON objeto.")
+
+        estimated_hours = float(parsed.get("estimated_hours", 0))
+        confidence = float(parsed.get("confidence", 0.0))
+        justification = str(parsed.get("justification", "")).strip()
+
+        if estimated_hours < 0:
+            estimated_hours = 0.0
+
+        confidence = max(0.0, min(1.0, confidence))
+
+        if estimated_hours > AGILE_HOURS_LIMIT:
+            split_msg = (
+                f" Estimativa acima de {AGILE_HOURS_LIMIT}h; recomenda-se refinar e "
+                f"quebrar a demanda em múltiplas issues menores."
+            )
+            if split_msg.strip() not in justification:
+                justification = (justification + split_msg).strip()
+
+        if not justification:
+            justification = "Estimativa por analogia baseada nas issues históricas mais similares."
+
+        parsed["estimated_hours"] = round(estimated_hours, 2)
+        parsed["confidence"] = round(confidence, 2)
+        parsed["justification"] = justification
+        parsed["token_usage"] = token_usage
         return parsed
+
     except Exception as e:
         print(f"[IA][ANALOGICAL] erro parse: {e}")
         return {

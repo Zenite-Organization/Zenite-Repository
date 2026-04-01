@@ -96,7 +96,7 @@ class Retriever:
     ) -> List[Dict[str, Any]]:
         # Backward compatibility for tests/mocks that expose in-memory issues.
         if hasattr(self.vs, "issues"):
-            return list(self.vs.issues)
+            return self._filter_description_length(list(self.vs.issues))
 
         query_text = self._build_query(issue_payload)
         if not query_text:
@@ -162,6 +162,7 @@ class Retriever:
 
             filtered = self._filter_score_threshold(raw, min_score=min_score)
             filtered_out_low_score_total += max(0, len(raw) - len(filtered))
+            filtered = self._filter_description_length(filtered)
 
             for match in filtered:
                 key = self._dedupe_key(match)
