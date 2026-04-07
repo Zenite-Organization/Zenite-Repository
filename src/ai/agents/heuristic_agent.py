@@ -8,15 +8,33 @@ from ai.core.token_usage import coerce_token_usage
 import json
 
 AGILE_HOURS_LIMIT = 40
-DEFAULT_FALLBACK_HOURS = 8
+DEFAULT_FALLBACK_HOURS = 10
+
+BASELINE_HOURS = {
+    "XS": 2,
+    "S": 5,
+    "M": 10,
+    "L": 18,
+    "XL": 28,
+    "XXL": 40,
+}
+
+SIZE_FLOOR = {
+    "XS": 1,
+    "S": 4,
+    "M": 8,
+    "L": 14,
+    "XL": 20,
+    "XXL": 32,
+}
 
 BASELINE_REFERENCE = """
 Baseline oficial de horas:
 - XS = 2h
-- S = 4h
-- M = 8h
-- L = 16h
-- XL = 24h
+- S = 5h
+- M = 10h
+- L = 18h
+- XL = 28h
 - XXL = 40h
 
 Regra central:
@@ -25,6 +43,15 @@ Regra central:
 - Só estime acima de 40h quando houver evidência textual forte de que a demanda está grande demais para uma única issue.
 """
 
+SIZE_GUIDE = """
+Guia de classificação:
+- XS: ajuste pontual, alteração simples e localizada
+- S: pequena alteração localizada, baixo acoplamento
+- M: tarefa padrão com implementação + validação
+- L: múltiplas regras, integração ou impacto em mais de uma parte do sistema
+- XL: escopo grande, dependências relevantes ou múltiplos pontos de implementação
+- XXL: limite superior aceitável para uma única issue refinada
+"""
 
 SYSTEM_ROLE_SCOPE = (
     "Você é um analista de software sênior especializado em estimativa heurística por escopo funcional, "
@@ -37,6 +64,8 @@ Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 Seu papel é estimar o esforço com foco principal em ESCOPO FUNCIONAL.
 
 {BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
 O QUE ANALISAR
@@ -65,9 +94,10 @@ CÁLCULO
 estimated_hours = baseline(size) × scale_factor
 
 Para esse modo:
-- scale_factor típico entre 0.90 e 1.40
+- scale_factor típico entre 1.00 e 1.35
 - use valores perto de 1.0 quando o texto for objetivo
 - só use fator alto se houver claro acúmulo de escopo funcional
+- se houver mais de um entregável relevante, evite classificar abaixo de M
 - prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
 
 ====================
@@ -97,7 +127,6 @@ Retorne APENAS um JSON válido:
 Não inclua texto fora do JSON.
 """
 
-
 SYSTEM_ROLE_COMPLEXITY = (
     "Você é um analista de software sênior especializado em estimativa heurística por complexidade técnica."
 )
@@ -108,6 +137,8 @@ Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 Seu papel é estimar o esforço com foco principal em COMPLEXIDADE TÉCNICA.
 
 {BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
 O QUE ANALISAR
@@ -137,9 +168,10 @@ CÁLCULO
 estimated_hours = baseline(size) × scale_factor
 
 Para esse modo:
-- scale_factor típico entre 0.90 e 1.70
-- aumente o fator quando houver lógica difícil, integrações ou dependências técnicas relevantes
+- scale_factor típico entre 1.00 e 1.60
+- se houver integração, regra complexa ou legado, prefira scale_factor >= 1.20
 - não amplifique apenas porque a issue parece genérica ou mal escrita
+- se houver integração relevante ou impacto em múltiplos componentes, evite classificar abaixo de M
 - prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
 
 ====================
@@ -169,7 +201,6 @@ Retorne APENAS um JSON válido:
 Não inclua texto fora do JSON.
 """
 
-
 SYSTEM_ROLE_UNCERTAINTY = (
     "Você é um analista de software sênior especializado em estimativa heurística por risco e incerteza."
 )
@@ -180,6 +211,8 @@ Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 Seu papel é estimar o esforço com foco principal em RISCO E INCERTEZA.
 
 {BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
 O QUE ANALISAR
@@ -211,9 +244,10 @@ CÁLCULO
 estimated_hours = baseline(size) × scale_factor
 
 Para esse modo:
-- scale_factor típico entre 1.00 e 1.80
+- scale_factor típico entre 1.00 e 1.65
 - use fator alto apenas quando a incerteza estiver explicitamente sustentada pelo texto
 - não transforme ausência de detalhes em explosão automática de horas
+- uncertainty deve moderar a estimativa, não dominar sozinha
 - prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
 
 ====================
@@ -243,7 +277,6 @@ Retorne APENAS um JSON válido:
 Não inclua texto fora do JSON.
 """
 
-
 SYSTEM_ROLE_AGILE_FIT = (
     "Você é um analista de software sênior especializado em granularidade ágil e decomposição de trabalho."
 )
@@ -254,6 +287,8 @@ Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 Seu papel é estimar o esforço com foco principal em ADERÊNCIA À GRANULARIDADE ÁGIL.
 
 {BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
 O QUE ANALISAR
@@ -284,9 +319,10 @@ CÁLCULO
 estimated_hours = baseline(size) × scale_factor
 
 Para esse modo:
-- scale_factor típico entre 0.80 e 1.50
+- scale_factor típico entre 0.95 e 1.45
 - use fator menor quando a issue estiver bem refinada
 - use fator maior quando a issue acumular trabalho demais
+- se parecer épico condensado ou múltiplos objetivos, evite classificar abaixo de L
 - prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
 
 ====================
@@ -351,6 +387,10 @@ def _normalize_heuristic_output(parsed: Dict[str, Any], mode: str) -> Dict[str, 
 
     confidence = max(0.0, min(1.0, confidence))
 
+    floor_hours = float(SIZE_FLOOR.get(size, 0))
+    if estimated_hours < floor_hours:
+        estimated_hours = floor_hours
+
     if estimated_hours > AGILE_HOURS_LIMIT:
         split_msg = (
             f" Estimativa acima de {AGILE_HOURS_LIMIT}h; recomenda-se refinar e "
@@ -406,7 +446,7 @@ def run_heuristic(
     response = llm.send_prompt(
         prompt,
         temperature=float(temperature),
-        max_tokens=400,
+        max_tokens=420,
     )
 
     token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))

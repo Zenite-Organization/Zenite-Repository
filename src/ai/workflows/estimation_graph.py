@@ -142,9 +142,9 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
     issue = state["issue"]
 
     agents = [
-    ("scope", 0.30),
-    ("complexity", 0.30),
-    ("uncertainty", 0.15),
+    ("scope", 0.28),
+    ("complexity", 0.37),
+    ("uncertainty", 0.10),
     ("agile_fit", 0.25),
     ]
     runs = len(agents)
@@ -169,7 +169,6 @@ def heuristic_ensemble_node(state: EstimationState) -> EstimationState:
             )
             normalized = normalize_estimation(res)
             normalized["mode"] = str(normalized.get("mode") or mode_name)
-            normalized["percentile"] = str(normalized.get("percentile") or mode_name)
             candidates.append(normalized)
         return {"heuristic_candidates": candidates}
 

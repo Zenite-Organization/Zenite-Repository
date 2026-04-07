@@ -9,10 +9,28 @@ from ai.core.prompt_utils import build_system_prompt
 AGILE_HOURS_LIMIT = 40
 
 MODE_WEIGHTS = {
-    "scope": 0.30,
-    "complexity": 0.30,
-    "uncertainty": 0.15,
+    "scope": 0.28,
+    "complexity": 0.37,
+    "uncertainty": 0.10,
     "agile_fit": 0.25,
+}
+
+SIZE_RANK = {
+    "XS": 1,
+    "S": 2,
+    "M": 3,
+    "L": 4,
+    "XL": 5,
+    "XXL": 6,
+}
+
+SUPERVISOR_SIZE_FLOOR = {
+    "XS": 1,
+    "S": 4,
+    "M": 8,
+    "L": 14,
+    "XL": 20,
+    "XXL": 32,
 }
 
 SYSTEM_ROLE_SUPERVISOR_HEURISTIC = (
@@ -66,7 +84,9 @@ nao como fonte principal de inflacao.
 - reduza confidence
 - evite extremos injustificados
 
-8. Se o resultado final ultrapassar {AGILE_HOURS_LIMIT}h:
+8. Se scope, complexity ou agile_fit indicarem size alto, nao consolide para uma faixa incompatível com esse porte.
+
+9. Se o resultado final ultrapassar {AGILE_HOURS_LIMIT}h:
 - mantenha a estimativa apenas se houver evidencia forte
 - a justification deve declarar que a issue excede o limite agil recomendado
 - e orientar refinamento/quebra em mais de uma issue
@@ -76,9 +96,9 @@ CALCULO SUGERIDO
 ====================
 
 Use como referencia aproximada:
-- scope: 0.30
-- complexity: 0.30
-- uncertainty: 0.15
+- scope: 0.28
+- complexity: 0.37
+- uncertainty: 0.10
 - agile_fit: 0.25
 
 Ajuste levemente conforme:
@@ -159,10 +179,72 @@ def _collect_mode_map(estimations: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
 
 def _safe_float(value: Any, default: float) -> float:
     try:
-        result = float(value)
+        return float(value)
     except (TypeError, ValueError):
         return default
-    return result
+
+
+def _safe_size(value: Any) -> str:
+    size = str(value or "M").strip().upper()
+    return size if size in SIZE_RANK else "M"
+
+
+def _dominant_core_size(mode_map: Dict[str, Dict[str, Any]]) -> str:
+    # ignora uncertainty na decisão estrutural
+    core_modes = ("scope", "complexity", "agile_fit")
+    vote_by_size: Dict[str, float] = {}
+
+    for mode in core_modes:
+        e = mode_map.get(mode)
+        if not e:
+            continue
+
+        size = _safe_size(e.get("size"))
+        conf = max(0.0, min(1.0, _safe_float(e.get("confidence", 0.5), 0.5)))
+        weight = MODE_WEIGHTS.get(mode, 0.25) * max(0.35, conf)
+
+        vote_by_size[size] = vote_by_size.get(size, 0.0) + weight
+
+    if not vote_by_size:
+        return "M"
+
+    return max(vote_by_size.items(), key=lambda item: (item[1], SIZE_RANK[item[0]]))[0]
+
+
+def _size_aware_floor(mode_map: Dict[str, Dict[str, Any]]) -> float:
+    dominant = _dominant_core_size(mode_map)
+    floor_hours = float(SUPERVISOR_SIZE_FLOOR.get(dominant, 0))
+
+    # trava adicional: se complexity ou agile_fit vierem altos, o piso sobe
+    complexity_size = _safe_size((mode_map.get("complexity") or {}).get("size"))
+    agile_fit_size = _safe_size((mode_map.get("agile_fit") or {}).get("size"))
+    scope_size = _safe_size((mode_map.get("scope") or {}).get("size"))
+
+    high_core_rank = max(
+        SIZE_RANK.get(complexity_size, 3),
+        SIZE_RANK.get(agile_fit_size, 3),
+        SIZE_RANK.get(scope_size, 3),
+    )
+
+    if high_core_rank >= SIZE_RANK["XXL"]:
+        floor_hours = max(floor_hours, 32.0)
+    elif high_core_rank >= SIZE_RANK["XL"]:
+        floor_hours = max(floor_hours, 20.0)
+    elif high_core_rank >= SIZE_RANK["L"]:
+        floor_hours = max(floor_hours, 14.0)
+
+    return floor_hours
+
+
+def _low_range_uplift(hours: float) -> float:
+    # calibração leve baseada no Result_v6: a faixa baixa está comprimida
+    if hours <= 8:
+        return hours * 1.20
+    if hours <= 12:
+        return hours * 1.12
+    if hours <= 16:
+        return hours * 1.06
+    return hours
 
 
 def _compute_heuristic_ensemble_fallback(
@@ -170,7 +252,7 @@ def _compute_heuristic_ensemble_fallback(
 ) -> Dict[str, Any]:
     if not estimations:
         return {
-            "estimated_hours": 8,
+            "estimated_hours": 10,
             "confidence": 0.3,
             "justification": "Fallback supervisor: sem entradas heuristicas.",
         }
@@ -206,7 +288,7 @@ def _compute_heuristic_ensemble_fallback(
 
     if not values or total_weight <= 0:
         return {
-            "estimated_hours": 8,
+            "estimated_hours": 10,
             "confidence": 0.3,
             "justification": "Fallback supervisor: sem dados heurísticos válidos.",
         }
@@ -221,19 +303,21 @@ def _compute_heuristic_ensemble_fallback(
 
     weighted_mean = weighted_sum / total_weight
     rel_spread = (high - low) / max(abs(q50), 1.0)
+    size_floor = _size_aware_floor(mode_map)
 
-    # Mistura robusta: média ponderada + quantis
     if rel_spread <= 0.35:
-        final_hours = 0.70 * weighted_mean + 0.30 * q50
+        final_hours = 0.78 * weighted_mean + 0.22 * q50
         strategy = "weighted_consensus"
     elif rel_spread <= 0.90:
-        final_hours = 0.55 * weighted_mean + 0.25 * q50 + 0.20 * q75
+        final_hours = 0.62 * weighted_mean + 0.23 * q50 + 0.15 * q75
         strategy = "balanced_mix"
     else:
-        final_hours = 0.40 * weighted_mean + 0.30 * q50 + 0.30 * q75
+        final_hours = 0.48 * weighted_mean + 0.22 * q50 + 0.30 * q75
         strategy = "cautious_mix"
 
-    # Regra de aderência ágil: >40h só com convergência real
+    final_hours = _low_range_uplift(final_hours)
+    final_hours = max(final_hours, size_floor)
+
     if over_limit_count < 2 and final_hours > AGILE_HOURS_LIMIT:
         final_hours = float(AGILE_HOURS_LIMIT)
         strategy += "_capped_agile"
@@ -333,8 +417,13 @@ def combine_heuristic_estimations(
             except (TypeError, ValueError):
                 pass
 
+        # trava de aderência ágil
         if estimated_hours > AGILE_HOURS_LIMIT and over_limit_count < 2:
             estimated_hours = AGILE_HOURS_LIMIT
+
+        # trava anti-subestimação por size estrutural
+        mode_map = _collect_mode_map(estimations)
+        estimated_hours = max(estimated_hours, int(round(_size_aware_floor(mode_map))))
 
         justification = _append_split_warning_if_needed(estimated_hours, justification)
 
