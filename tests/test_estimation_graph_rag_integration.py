@@ -21,7 +21,7 @@ class _FakeVectorStore:
                         "issue_key": "MDL-65179",
                         "project_key": "MDL",
                         "title": "Lock fix",
-                        "description": "Fix lock contention",
+                        "description": "Fix lock contention by reworking the queue coordination and reducing repeated waits across concurrent requests.",
                         "total_effort_minutes": 31844,
                     },
                 }

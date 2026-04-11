@@ -4,7 +4,7 @@ from ai.core.retriever import Retriever
 from config.settings import settings
 
 
-def _match(namespace: str, idx: int, score: float):
+def _match(namespace: str, idx: int, score: float, description: str | None = None):
     project_key = namespace.replace("_issues", "")
     return {
         "id": f"{namespace}:{idx}",
@@ -16,7 +16,7 @@ def _match(namespace: str, idx: int, score: float):
             "project_key": project_key.upper(),
             "issue_key": f"{project_key.upper()}-{idx}",
             "issue_title": f"{namespace} issue {idx}",
-            "description": "desc",
+            "description": description or ("a" * 100),
             "total_effort_minutes": 60,
         },
     }
@@ -101,6 +101,23 @@ class TestRetrieverScoreFilter(unittest.TestCase):
         )
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["issue_key"], "MOBILE-APP-1")
+
+    def test_short_descriptions_are_excluded(self):
+        vs = _FakeVectorStore(
+            responses={
+                "mobile-app_issues": [
+                    _match("mobile-app_issues", 1, 0.98, description="curta demais"),
+                    _match("mobile-app_issues", 2, 0.97, description="b" * 100),
+                ],
+            },
+            namespaces=["mobile-app_issues"],
+        )
+        retriever = Retriever(vs)
+        result = retriever.get_similar_issues(
+            {"title": "Issue", "description": "Desc", "repository": "timob/mobile-app"}
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["issue_key"], "MOBILE-APP-2")
 
 
 if __name__ == "__main__":

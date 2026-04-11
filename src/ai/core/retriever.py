@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class Retriever:
+    MIN_DESCRIPTION_LENGTH = 100
+
     def __init__(self, vector_store):
         self.vs = vector_store
         self.last_rag_usage: Dict[str, Any] = {"embedding_tokens": 0, "embedding_calls": 0}
@@ -60,6 +62,16 @@ class Retriever:
     ) -> List[Dict[str, Any]]:
         return [m for m in matches if self._safe_score(m) >= float(min_score)]
 
+    @classmethod
+    def _filter_description_length(cls, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered: List[Dict[str, Any]] = []
+        for match in matches:
+            metadata = match.get("metadata") or {}
+            description = metadata.get("description")
+            if isinstance(description, str) and len(description.strip()) >= cls.MIN_DESCRIPTION_LENGTH:
+                filtered.append(match)
+        return filtered
+
     @staticmethod
     def _dedupe_key(match: Dict[str, Any]) -> str:
         metadata = match.get("metadata") or {}
@@ -72,7 +84,7 @@ class Retriever:
     def _pinecone_where_filter() -> Dict[str, Any]:
         return {
             "$and": [
-                {"total_effort_hours": {"$gte": 1, "$lte": 300}},
+                {"total_effort_hours": {"$gte": 1, "$lte": 40}},
                 {"description": {"$exists": True, "$ne": ""}},
             ]
         }
@@ -84,7 +96,7 @@ class Retriever:
     ) -> List[Dict[str, Any]]:
         # Backward compatibility for tests/mocks that expose in-memory issues.
         if hasattr(self.vs, "issues"):
-            return list(self.vs.issues)
+            return self._filter_description_length(list(self.vs.issues))
 
         query_text = self._build_query(issue_payload)
         if not query_text:
@@ -150,6 +162,7 @@ class Retriever:
 
             filtered = self._filter_score_threshold(raw, min_score=min_score)
             filtered_out_low_score_total += max(0, len(raw) - len(filtered))
+            filtered = self._filter_description_length(filtered)
 
             for match in filtered:
                 key = self._dedupe_key(match)

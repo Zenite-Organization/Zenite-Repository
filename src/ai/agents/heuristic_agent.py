@@ -1,275 +1,440 @@
 from typing import Dict, Any
+
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
 from ai.core.token_usage import coerce_token_usage
+
 import json
 
+AGILE_HOURS_LIMIT = 40
+DEFAULT_FALLBACK_HOURS = 10
 
-SYSTEM_ROLE_P25 = (
-    "Você é um analista de software sênior especializado em estimativa heurística conservadora."
+BASELINE_HOURS = {
+    "XS": 2,
+    "S": 5,
+    "M": 10,
+    "L": 18,
+    "XL": 28,
+    "XXL": 40,
+}
+
+SIZE_FLOOR = {
+    "XS": 1,
+    "S": 4,
+    "M": 8,
+    "L": 14,
+    "XL": 20,
+    "XXL": 32,
+}
+
+BASELINE_REFERENCE = """
+Baseline oficial de horas:
+- XS = 2h
+- S = 5h
+- M = 10h
+- L = 18h
+- XL = 28h
+- XXL = 40h
+
+Regra central:
+- XXL = limite superior esperado para uma issue saudável.
+- Acima de 40h é EXCEÇÃO.
+- Só estime acima de 40h quando houver evidência textual forte de que a demanda está grande demais para uma única issue.
+"""
+
+SIZE_GUIDE = """
+Guia de classificação:
+- XS: ajuste pontual, alteração simples e localizada
+- S: pequena alteração localizada, baixo acoplamento
+- M: tarefa padrão com implementação + validação
+- L: múltiplas regras, integração ou impacto em mais de uma parte do sistema
+- XL: escopo grande, dependências relevantes ou múltiplos pontos de implementação
+- XXL: limite superior aceitável para uma única issue refinada
+"""
+
+SYSTEM_ROLE_SCOPE = (
+    "Você é um analista de software sênior especializado em estimativa heurística por escopo funcional, "
+    "com foco em tarefas ágeis pequenas, refinadas e previsíveis."
 )
 
-INSTRUCTION_P25 = """
+INSTRUCTION_SCOPE = f"""
 Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 
-Seu papel é estimar o esforço representando um cenário OTIMISTA CONTROLADO (aproximadamente p25).
-Você assume que riscos médios tendem a não se materializar.
+Seu papel é estimar o esforço com foco principal em ESCOPO FUNCIONAL.
+
+{BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
-ETAPA 1 — CLASSIFICAÇÃO DE TAMANHO
+O QUE ANALISAR
 ====================
 
-Classifique como:
-XS | S | M | L | XL
-
-Baseline central sugerido:
-XS = 2h
-S  = 5h
-M  = 10h
-L  = 20h
-XL = 40h
+Avalie principalmente:
+- quantidade de entregáveis implícitos
+- quantidade de requisitos ou regras mencionadas
+- número de ações diferentes dentro da mesma issue
+- quantidade de áreas, módulos ou partes do sistema afetadas
+- se a issue parece uma entrega única ou várias entregas agrupadas
 
 ====================
-ETAPA 2 — FATORES
+CLASSIFICAÇÃO DE TAMANHO
 ====================
 
-Avalie de 1 a 5:
-- complexidade técnica
-- risco
-- incerteza
-- escopo (quantidade de componentes afetados)
+Classifique a issue em:
+XS | S | M | L | XL | XXL
 
-Para p25:
-- Considere apenas riscos CLAROS e explícitos.
-- Não amplifique incertezas vagas.
-- Use scale_factor > 1 apenas se houver evidência forte de escopo grande.
+Escolha o size com base no tamanho funcional percebido, e não no medo de risco.
 
 ====================
-ETAPA 3 — CÁLCULO
+CÁLCULO
 ====================
 
 estimated_hours = baseline(size) × scale_factor
 
-Onde:
-- scale_factor normalmente entre 0.8 e 1.5
-- Pode ultrapassar 1.5 apenas se houver forte evidência de escopo grande.
+Para esse modo:
+- scale_factor típico entre 1.00 e 1.35
+- use valores perto de 1.0 quando o texto for objetivo
+- só use fator alto se houver claro acúmulo de escopo funcional
+- se houver mais de um entregável relevante, evite classificar abaixo de M
+- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
+
+====================
+EXCEÇÃO > 40H
+====================
+
+Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
+- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
+- mas apenas com evidência textual forte de escopo excessivo
+- a justification DEVE dizer explicitamente que a demanda está acima do limite recomendado
+- e DEVE orientar quebrar/refinar em múltiplas issues menores
 
 ====================
 SAÍDA
 ====================
 
 Retorne APENAS um JSON válido:
-
-{
-  "percentile": "p25",
-  "size": "XS|S|M|L|XL",
+{{
+  "mode": "scope",
+  "size": "XS|S|M|L|XL|XXL",
   "scale_factor": float,
   "estimated_hours": float,
-  "confidence": float (0..1),
+  "confidence": float,
   "justification": "curta e objetiva"
-}
+}}
 
 Não inclua texto fora do JSON.
 """
 
-SYSTEM_ROLE_P50 = (
-    "Você é um analista de software sênior especializado em estimativa heurística realista."
+SYSTEM_ROLE_COMPLEXITY = (
+    "Você é um analista de software sênior especializado em estimativa heurística por complexidade técnica."
 )
 
-INSTRUCTION_P50 = """
+INSTRUCTION_COMPLEXITY = f"""
 Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 
-Seu papel é estimar o esforço representando o cenário MAIS PROVÁVEL (aproximadamente p50).
+Seu papel é estimar o esforço com foco principal em COMPLEXIDADE TÉCNICA.
+
+{BASELINE_REFERENCE}
+
+{SIZE_GUIDE}
 
 ====================
-ETAPA 1 — CLASSIFICAÇÃO
+O QUE ANALISAR
 ====================
 
-XS = 2h
-S  = 5h
-M  = 10h
-L  = 20h
-XL = 40h
+Avalie principalmente:
+- dificuldade técnica da implementação
+- integrações
+- regras de negócio complexas
+- impacto arquitetural
+- necessidade de conhecimento especializado
+- acoplamento com legado
 
 ====================
-ETAPA 2 — FATORES
+CLASSIFICAÇÃO DE TAMANHO
 ====================
 
-Avalie:
-- complexidade
-- dependências
-- legado
-- risco
-- incerteza
-- impacto técnico
+Classifique a issue em:
+XS | S | M | L | XL | XXL
 
-Para p50:
-- Considere riscos moderados como parcialmente prováveis.
-- Use scale_factor proporcional à combinação de escopo + risco.
+Escolha o size pelo porte técnico mais plausível da implementação.
 
 ====================
-ETAPA 3 — CÁLCULO
+CÁLCULO
 ====================
 
 estimated_hours = baseline(size) × scale_factor
 
-Onde:
-- scale_factor típico entre 1.0 e 2.5
-- Pode ultrapassar 2.5 se o texto indicar escopo grande (migração ampla, múltiplos sistemas, rewrite, rollout extenso, etc.)
+Para esse modo:
+- scale_factor típico entre 1.00 e 1.60
+- se houver integração, regra complexa ou legado, prefira scale_factor >= 1.20
+- não amplifique apenas porque a issue parece genérica ou mal escrita
+- se houver integração relevante ou impacto em múltiplos componentes, evite classificar abaixo de M
+- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
+
+====================
+EXCEÇÃO > 40H
+====================
+
+Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
+- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
+- mas somente se a complexidade técnica realmente sustentar isso
+- a justification DEVE informar que a issue ultrapassa o tamanho recomendado
+- e DEVE recomendar quebra/refinamento
 
 ====================
 SAÍDA
 ====================
 
-{
-  "percentile": "p50",
-  "size": "...",
+Retorne APENAS um JSON válido:
+{{
+  "mode": "complexity",
+  "size": "XS|S|M|L|XL|XXL",
   "scale_factor": float,
   "estimated_hours": float,
   "confidence": float,
   "justification": "curta e objetiva"
-}
+}}
+
+Não inclua texto fora do JSON.
 """
-SYSTEM_ROLE_P75 = (
-    "Você é um analista de software sênior especializado em estimativa heurística cautelosa."
+
+SYSTEM_ROLE_UNCERTAINTY = (
+    "Você é um analista de software sênior especializado em estimativa heurística por risco e incerteza."
 )
 
-INSTRUCTION_P75 = """
-Você recebeu o CONTEXTO COMPLETO de uma issue.
+INSTRUCTION_UNCERTAINTY = f"""
+Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 
-Seu papel é estimar o esforço representando um cenário CAUTELOSO (aproximadamente p75).
-Assuma que riscos moderados tendem a se materializar.
+Seu papel é estimar o esforço com foco principal em RISCO E INCERTEZA.
 
-====================
-BASELINES
-====================
+{BASELINE_REFERENCE}
 
-XS = 2h
-S  = 5h
-M  = 10h
-L  = 20h
-XL = 40h
+{SIZE_GUIDE}
 
 ====================
-REGRAS
+O QUE ANALISAR
 ====================
 
-- Considere incertezas como custo real.
-- Penalize dependências externas.
-- Penalize código legado.
-- Se houver múltiplos componentes, aumente scale_factor.
+Avalie principalmente:
+- ambiguidade do texto
+- necessidade de investigação
+- dependências externas
+- dependência de terceiros
+- legado e chance de retrabalho
+- lacunas de definição
+- risco de descoberta durante a execução
+
+====================
+CLASSIFICAÇÃO DE TAMANHO
+====================
+
+Classifique a issue em:
+XS | S | M | L | XL | XXL
+
+Primeiro escolha um size plausível da entrega.
+Depois use o fator para refletir incerteza real.
 
 ====================
 CÁLCULO
 ====================
 
-estimated_hours = baseline × scale_factor
+estimated_hours = baseline(size) × scale_factor
 
-Onde:
-- scale_factor típico entre 1.5 e 4.0
-- Pode ultrapassar 4.0 se houver evidência de escopo amplo ou integração complexa.
+Para esse modo:
+- scale_factor típico entre 1.00 e 1.65
+- use fator alto apenas quando a incerteza estiver explicitamente sustentada pelo texto
+- não transforme ausência de detalhes em explosão automática de horas
+- uncertainty deve moderar a estimativa, não dominar sozinha
+- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
+
+====================
+EXCEÇÃO > 40H
+====================
+
+Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
+- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
+- mas apenas se os riscos e as incertezas realmente indicarem demanda grande
+- a justification DEVE declarar que a issue está acima do limite recomendado
+- e DEVE orientar quebrar/refinar
 
 ====================
 SAÍDA
 ====================
 
-{
-  "percentile": "p75",
-  "size": "...",
+Retorne APENAS um JSON válido:
+{{
+  "mode": "uncertainty",
+  "size": "XS|S|M|L|XL|XXL",
   "scale_factor": float,
   "estimated_hours": float,
   "confidence": float,
   "justification": "curta e objetiva"
-}
+}}
+
+Não inclua texto fora do JSON.
 """
 
-SYSTEM_ROLE_P100 = (
-    "Você é um analista de software sênior especializado em análise de pior caso plausível."
+SYSTEM_ROLE_AGILE_FIT = (
+    "Você é um analista de software sênior especializado em granularidade ágil e decomposição de trabalho."
 )
 
-INSTRUCTION_P100 = """
-Você recebeu o CONTEXTO COMPLETO de uma issue.
+INSTRUCTION_AGILE_FIT = f"""
+Você recebeu o CONTEXTO COMPLETO de uma issue de software.
 
-Seu papel é estimar o PIOR CASO PLAUSÍVEL (aproximadamente p100),
-mas sem exageros irreais.
+Seu papel é estimar o esforço com foco principal em ADERÊNCIA À GRANULARIDADE ÁGIL.
 
-====================
-BASELINES
-====================
+{BASELINE_REFERENCE}
 
-XS = 2h
-S  = 5h
-M  = 10h
-L  = 20h
-XL = 40h
+{SIZE_GUIDE}
 
 ====================
-REGRAS
+O QUE ANALISAR
 ====================
 
-- Considere que todos riscos moderados e altos se concretizam.
-- Se houver incerteza significativa, amplifique.
-- Se houver sinais de epic/migração/refatoração ampla, permita escala elevada.
+Avalie principalmente:
+- se a issue parece refinada
+- se a issue mistura descoberta + implementação + rollout
+- se há sinais de épico condensado
+- se a issue combina múltiplos objetivos
+- se há escopo excessivo para uma única entrega ágil
+- se a demanda deveria ser quebrada em mais de uma issue
+
+====================
+CLASSIFICAÇÃO DE TAMANHO
+====================
+
+Classifique a issue em:
+XS | S | M | L | XL | XXL
+
+Se a issue parecer saudável para o ágil, mantenha a classificação dentro do regime normal.
+Se parecer ampla demais, isso deve aparecer tanto no size quanto na justificativa.
 
 ====================
 CÁLCULO
 ====================
 
-estimated_hours = baseline × scale_factor
+estimated_hours = baseline(size) × scale_factor
 
-Onde:
-- scale_factor típico entre 2.0 e 6.0
-- Pode ultrapassar 6.0 apenas com forte evidência textual de grande escopo.
+Para esse modo:
+- scale_factor típico entre 0.95 e 1.45
+- use fator menor quando a issue estiver bem refinada
+- use fator maior quando a issue acumular trabalho demais
+- se parecer épico condensado ou múltiplos objetivos, evite classificar abaixo de L
+- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
+
+====================
+EXCEÇÃO > 40H
+====================
+
+Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
+- trate isso como exceção
+- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
+- a justification DEVE informar explicitamente que a demanda está grande demais para uma única issue
+- e DEVE recomendar quebrar/refinar em múltiplas issues
 
 ====================
 SAÍDA
 ====================
 
-{
-  "percentile": "p100",
-  "size": "...",
+Retorne APENAS um JSON válido:
+{{
+  "mode": "agile_fit",
+  "size": "XS|S|M|L|XL|XXL",
   "scale_factor": float,
   "estimated_hours": float,
   "confidence": float,
   "justification": "curta e objetiva"
-}
+}}
+
+Não inclua texto fora do JSON.
 """
+
+
+def _normalize_heuristic_output(parsed: Dict[str, Any], mode: str) -> Dict[str, Any]:
+    if "mode" not in parsed:
+        parsed["mode"] = mode
+
+    try:
+        estimated_hours = float(parsed.get("estimated_hours", DEFAULT_FALLBACK_HOURS))
+    except (TypeError, ValueError):
+        estimated_hours = float(DEFAULT_FALLBACK_HOURS)
+
+    try:
+        scale_factor = float(parsed.get("scale_factor", 1.0))
+    except (TypeError, ValueError):
+        scale_factor = 1.0
+
+    try:
+        confidence = float(parsed.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+
+    size = str(parsed.get("size", "M")).strip().upper() or "M"
+    justification = str(parsed.get("justification", "")).strip()
+
+    allowed_sizes = {"XS", "S", "M", "L", "XL", "XXL"}
+    if size not in allowed_sizes:
+        size = "M"
+
+    if estimated_hours < 0:
+        estimated_hours = 0.0
+
+    if scale_factor < 0:
+        scale_factor = 0.0
+
+    confidence = max(0.0, min(1.0, confidence))
+
+    floor_hours = float(SIZE_FLOOR.get(size, 0))
+    if estimated_hours < floor_hours:
+        estimated_hours = floor_hours
+
+    if estimated_hours > AGILE_HOURS_LIMIT:
+        split_msg = (
+            f" Estimativa acima de {AGILE_HOURS_LIMIT}h; recomenda-se refinar e "
+            f"quebrar a demanda em múltiplas issues menores."
+        )
+        if split_msg.strip() not in justification:
+            justification = (justification + split_msg).strip()
+
+    if not justification:
+        justification = "Estimativa heurística gerada com base no contexto técnico da issue."
+
+    parsed["mode"] = mode
+    parsed["size"] = size
+    parsed["scale_factor"] = round(scale_factor, 2)
+    parsed["estimated_hours"] = round(estimated_hours, 2)
+    parsed["confidence"] = round(confidence, 2)
+    parsed["justification"] = justification
+    return parsed
+
 
 def run_heuristic(
     issue_context: Dict[str, Any],
     llm: LLMClient,
     temperature: float = 0.0,
-    mode: str = "p50",   # <- novo parâmetro
+    mode: str = "complexity",
 ) -> Dict[str, Any]:
-
     print(f"[IA][HEURISTIC][{mode}] inicio issue={issue_context.get('issue_number')}")
 
-    # =========================
-    # Seleção de Prompt por modo
-    # =========================
-
-    if mode == "p25":
-        system_role = SYSTEM_ROLE_P25
-        instruction = INSTRUCTION_P25
-
-    elif mode == "p50":
-        system_role = SYSTEM_ROLE_P50
-        instruction = INSTRUCTION_P50
-
-    elif mode == "p75":
-        system_role = SYSTEM_ROLE_P75
-        instruction = INSTRUCTION_P75
-
-    elif mode == "p100":
-        system_role = SYSTEM_ROLE_P100
-        instruction = INSTRUCTION_P100
-
+    if mode == "scope":
+        system_role = SYSTEM_ROLE_SCOPE
+        instruction = INSTRUCTION_SCOPE
+    elif mode == "complexity":
+        system_role = SYSTEM_ROLE_COMPLEXITY
+        instruction = INSTRUCTION_COMPLEXITY
+    elif mode == "uncertainty":
+        system_role = SYSTEM_ROLE_UNCERTAINTY
+        instruction = INSTRUCTION_UNCERTAINTY
+    elif mode == "agile_fit":
+        system_role = SYSTEM_ROLE_AGILE_FIT
+        instruction = INSTRUCTION_AGILE_FIT
     else:
         raise ValueError(f"Modo heurístico inválido: {mode}")
 
     system_prompt = build_system_prompt(system_role, instruction)
-
     issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
 
     prompt = (
@@ -281,30 +446,29 @@ def run_heuristic(
     response = llm.send_prompt(
         prompt,
         temperature=float(temperature),
-        max_tokens=350
+        max_tokens=420,
     )
+
     token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))
 
     try:
         parsed = parse_llm_json_response(response)
         print(f"[IA][HEURISTIC][{mode}] retorno:", parsed)
 
-        # opcional: garantir que o percentile volte consistente
-        if "percentile" not in parsed:
-            parsed["percentile"] = mode
+        if not isinstance(parsed, dict):
+            raise ValueError("Resposta do modelo não é um JSON objeto.")
 
-        if isinstance(parsed, dict):
-            parsed["token_usage"] = token_usage
-
+        parsed = _normalize_heuristic_output(parsed, mode)
+        parsed["token_usage"] = token_usage
         return parsed
 
     except Exception as e:
         print(f"[IA][HEURISTIC][{mode}] erro parse: {e}")
         return {
-            "percentile": mode,
+            "mode": mode,
             "size": "M",
             "scale_factor": 1.0,
-            "estimated_hours": 8,
+            "estimated_hours": DEFAULT_FALLBACK_HOURS,
             "confidence": 0.3,
             "justification": "Falha ao interpretar resposta do modelo; valor padrão aplicado.",
             "error": str(e),

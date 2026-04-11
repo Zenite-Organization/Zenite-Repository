@@ -103,7 +103,7 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
                 x.resolution_date IS NOT NULL
                 AND x.status IN ('Closed','Done','Resolved','Complete')
                 AND x.resolution IN ('Fixed','Done','Complete','Completed','Works as Designed')
-                AND cast((x.total_effort_minutes/60) as SIGNED) BETWEEN 1 AND 300
+                AND cast((x.total_effort_minutes/60) as SIGNED) BETWEEN 1 AND 40
                 AND length(description_text) >= 100 
                 AND x.project_id = :project_id
         ) i
