@@ -1,13 +1,17 @@
 import json
 import logging
 import os
+import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from application.use_cases.handle_github_webhook import HandleGithubWebhookUseCase
+from clients.github.github_provider import get_provider_for_installation
 from clients.github.github_auth import verify_signature
 from web.idempotency import InMemoryIdempotencyStore
+from web.rate_limit import InMemoryDailyRateLimiter
 from web.schemas.github_payloads import GitHubIssuesWebhookPayload
 
 
@@ -17,6 +21,10 @@ use_case = HandleGithubWebhookUseCase()
 idempotency = InMemoryIdempotencyStore(
     ttl_seconds=int(os.getenv("GITHUB_WEBHOOK_DEDUP_TTL_SECONDS", "600")),
     inflight_ttl_seconds=int(os.getenv("GITHUB_WEBHOOK_INFLIGHT_TTL_SECONDS", "300")),
+)
+daily_limit = int(os.getenv("GITHUB_WEBHOOK_DAILY_LIMIT", "10"))
+rate_limiter = InMemoryDailyRateLimiter(
+    limit_default=daily_limit,
 )
 
 
@@ -63,6 +71,53 @@ async def handle_github_issues(
     except Exception as e:
         await idempotency.release(x_github_delivery)
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    installation_id = payload.installation.id
+    utc_day = datetime.fromtimestamp(time.time(), tz=timezone.utc).date().isoformat()
+    rate_key = f"installation:{installation_id}:{utc_day}"
+    decision = await rate_limiter.check_and_increment(rate_key)
+    if not decision.allowed:
+        response_dict = {
+            "status": "ignored",
+            "event": x_github_event,
+            "action": payload.action,
+            "flow": "none",
+            "details": {
+                "reason": "rate_limited",
+                "limit": daily_limit,
+                "remaining": 0,
+                "reset_at": decision.reset_at_iso_utc,
+                "key": str(installation_id),
+            },
+        }
+
+        issue_node_id = payload.issue.node_id if payload.issue else None
+        if issue_node_id:
+            notify_key = f"notify:{installation_id}:{utc_day}:{issue_node_id}"
+            if await rate_limiter.should_notify_once(notify_key):
+                reset_at = decision.reset_at_iso_utc
+                comment_template = os.getenv(
+                    "GITHUB_WEBHOOK_RATE_LIMIT_COMMENT_TEXT",
+                    "Zenite (Free): limite diário de {limit} execuções atingido para esta instalação. "
+                    "Tente novamente após {reset_at} (UTC).",
+                )
+                try:
+                    provider = get_provider_for_installation(installation_id)
+                    await provider.auth.ensure_token()
+                    await provider.add_comment(
+                        subject_id=issue_node_id,
+                        body=comment_template.format(limit=daily_limit, reset_at=reset_at),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to comment rate limit notice installation_id=%s issue_node_id=%s",
+                        installation_id,
+                        issue_node_id,
+                    )
+
+        response = JSONResponse(status_code=202, content=response_dict)
+        await idempotency.mark_done(x_github_delivery, response)
+        return response
 
     try:
         result = await use_case.handle(
