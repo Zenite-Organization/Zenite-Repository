@@ -12,7 +12,7 @@ class _Entry:
     state: Literal["in_progress", "done"]
     created_at: float
     updated_at: float
-    response: Optional[Dict[str, Any]] = None
+    response: Optional[Any] = None
 
 
 class InMemoryIdempotencyStore:
@@ -35,7 +35,7 @@ class InMemoryIdempotencyStore:
         self._lock = asyncio.Lock()
         self._entries: Dict[str, _Entry] = {}
 
-    async def reserve(self, key: str) -> Tuple[State, Optional[Dict[str, Any]]]:
+    async def reserve(self, key: str) -> Tuple[State, Optional[Any]]:
         """
         Reserve a key for processing.
 
@@ -63,7 +63,7 @@ class InMemoryIdempotencyStore:
 
             return "in_progress", None
 
-    async def mark_done(self, key: str, response: Dict[str, Any]) -> None:
+    async def mark_done(self, key: str, response: Any) -> None:
         now = time.monotonic()
         async with self._lock:
             self._entries[key] = _Entry(
@@ -99,4 +99,3 @@ class InMemoryIdempotencyStore:
 
         for key in to_delete:
             self._entries.pop(key, None)
-

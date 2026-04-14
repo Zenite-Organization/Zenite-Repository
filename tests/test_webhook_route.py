@@ -2,6 +2,7 @@ import unittest
 import hashlib
 import hmac
 import json
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,12 @@ from main import app
 class TestWebhookRoute(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
+        # Reset module-level in-memory rate limiter between tests to avoid state leak.
+        from web.rate_limit import InMemoryDailyRateLimiter
+        from web.routes import github_webhook
+
+        github_webhook.rate_limiter = InMemoryDailyRateLimiter(limit_default=10)
+        github_webhook.daily_limit = 10
 
     def _signed_headers(self, event: str, delivery: str, body: bytes) -> dict:
         headers = {
@@ -72,6 +79,68 @@ class TestWebhookRoute(unittest.TestCase):
             self.assertEqual(response.status_code, 401)
         finally:
             settings.GITHUB_WEBHOOK_SECRET = previous_secret
+
+    def test_rate_limits_after_10_requests_per_installation_per_day(self):
+        payload = {
+            "action": "opened",
+            "repository": {"full_name": "org/repo"},
+            "installation": {"id": 123},
+        }
+        body = json.dumps(payload).encode("utf-8")
+
+        for i in range(10):
+            resp = self.client.post(
+                "/webhook/github",
+                content=body,
+                headers=self._signed_headers("issues", f"delivery-rl-{i}", body),
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        blocked = self.client.post(
+            "/webhook/github",
+            content=body,
+            headers=self._signed_headers("issues", "delivery-rl-10", body),
+        )
+        self.assertEqual(blocked.status_code, 202)
+        data = blocked.json()
+        self.assertEqual(data["status"], "ignored")
+        self.assertEqual(data["details"]["reason"], "rate_limited")
+        self.assertEqual(data["details"]["remaining"], 0)
+        self.assertEqual(data["details"]["limit"], 10)
+
+    def test_rate_limit_comments_only_once_per_issue_per_day(self):
+        payload = {
+            "action": "opened",
+            "issue": {"node_id": "ISSUE_NODE", "number": 1, "labels": []},
+            "repository": {"full_name": "org/repo"},
+            "installation": {"id": 123},
+        }
+        body = json.dumps(payload).encode("utf-8")
+
+        provider = type("P", (), {})()
+        provider.auth = type("A", (), {})()
+        provider.auth.ensure_token = AsyncMock(return_value="tok")
+        provider.add_comment = AsyncMock(return_value={})
+
+        with patch("web.routes.github_webhook.get_provider_for_installation", return_value=provider):
+            # 10 ok + 1 blocked => should comment once
+            for i in range(11):
+                self.client.post(
+                    "/webhook/github",
+                    content=body,
+                    headers=self._signed_headers("issues", f"delivery-cm-{i}", body),
+                )
+
+            # Additional blocked deliveries should not add more comments for same issue/day.
+            for i in range(11, 14):
+                resp = self.client.post(
+                    "/webhook/github",
+                    content=body,
+                    headers=self._signed_headers("issues", f"delivery-cm-{i}", body),
+                )
+                self.assertEqual(resp.status_code, 202)
+
+        provider.add_comment.assert_awaited_once()
 
 
 if __name__ == "__main__":
