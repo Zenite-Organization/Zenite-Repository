@@ -28,8 +28,16 @@ class Retriever:
         def norm(x: Any) -> str:
             return str(x).strip() if x else ""
 
+        labels_raw = issue_payload.get("labels") or []
+        if isinstance(labels_raw, list):
+            labels = ", ".join(str(item).strip() for item in labels_raw if str(item).strip())
+        else:
+            labels = norm(labels_raw)
+
         parts = [
             f"[Title] {norm(issue_payload.get('title'))}",
+            f"[Type] {norm(issue_payload.get('issue_type'))}",
+            f"[Labels] {labels}",
             f"[Description] {norm(issue_payload.get('description'))}",
         ]
 
@@ -100,7 +108,7 @@ class Retriever:
 
         query_text = self._build_query(issue_payload)
         if not query_text:
-            print("[RAG] query vazia, retornando contexto vazio")
+            logger.debug("[RAG] query vazia, retornando contexto vazio")
             return []
 
         target_size = settings.RAG_FINAL_CONTEXT_SIZE
@@ -126,7 +134,11 @@ class Retriever:
                     break
                 namespace_order.append(namespace)
                 fallback_namespaces_tried.append(namespace)
-        print(discovered_issue_namespaces, namespace_order)
+        logger.debug(
+            "[RAG] discovered_issue_namespaces=%s namespace_order=%s",
+            discovered_issue_namespaces,
+            namespace_order,
+        )
         all_raw_matches: List[Dict[str, Any]] = []
         qualified_raw_matches: List[Dict[str, Any]] = []
         seen_keys = set()
