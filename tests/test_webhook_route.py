@@ -82,9 +82,10 @@ class TestWebhookRoute(unittest.TestCase):
 
     def test_rate_limits_after_10_requests_per_installation_per_day(self):
         payload = {
-            "action": "opened",
+            "action": "labeled",
             "repository": {"full_name": "org/repo"},
             "installation": {"id": 123},
+            "label": {"name": "Estimate"},
         }
         body = json.dumps(payload).encode("utf-8")
 
@@ -110,10 +111,11 @@ class TestWebhookRoute(unittest.TestCase):
 
     def test_rate_limit_comments_only_once_per_issue_per_day(self):
         payload = {
-            "action": "opened",
-            "issue": {"node_id": "ISSUE_NODE", "number": 1, "labels": []},
+            "action": "labeled",
+            "issue": {"node_id": "ISSUE_NODE", "number": 1, "labels": []},      
             "repository": {"full_name": "org/repo"},
             "installation": {"id": 123},
+            "label": {"name": "Estimate"},
         }
         body = json.dumps(payload).encode("utf-8")
 

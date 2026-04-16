@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse
 from application.use_cases.handle_github_webhook import HandleGithubWebhookUseCase
 from clients.github.github_provider import get_provider_for_installation
 from clients.github.github_auth import verify_signature
+from clients.github.utils import extract_label_names
+from domain.webhook_rules import decide_flow
+from domain.webhook_models import WebhookFlow
 from web.idempotency import InMemoryIdempotencyStore
 from web.rate_limit import InMemoryDailyRateLimiter
 from web.schemas.github_payloads import GitHubIssuesWebhookPayload
@@ -68,6 +71,26 @@ async def handle_github_issues(
         payload_dict = json.loads(body_bytes.decode("utf-8"))
 
         payload = GitHubIssuesWebhookPayload(**payload_dict)
+        # Extract label names from both `issue.labels` and the top-level `label` field
+        raw_labels = []
+        if payload.issue:
+            raw_labels.extend(payload.issue.labels or [])
+        if isinstance(payload_dict, dict) and payload_dict.get("label"):
+            raw_labels.append(payload_dict.get("label"))
+
+        labels = extract_label_names(raw_labels)
+
+        # Decide flow early: if no applicable flow, delegate to use_case (returns IGNORED dict)
+        flow = decide_flow(x_github_event, payload.action, labels)
+        if flow == WebhookFlow.NONE:
+            result = await use_case.handle(
+                payload=payload,
+                event=x_github_event,
+                delivery_id=x_github_delivery,
+            )
+            response = result.to_dict()
+            await idempotency.mark_done(x_github_delivery, response)
+            return response
     except Exception as e:
         await idempotency.release(x_github_delivery)
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
