@@ -7,14 +7,31 @@ class TestPromptUtils(unittest.TestCase):
     def test_skips_items_without_title_or_estimate(self):
         text = format_similar_issues(
             [
-                {"title": "Valid 1", "total_effort_hours": 2.5},
+                {
+                    "title": "Valid 1",
+                    "total_effort_hours": 2.5,
+                    "score": 0.91,
+                    "issue_type": "bug",
+                    "doc_type": "issue",
+                    "description": "Small localized fix in one preference page.",
+                },
                 {"title": "", "total_effort_hours": 4},
                 {"title": "No estimate", "total_effort_hours": None},
-                {"title": "Valid 2", "total_effort_hours": 8},
+                {
+                    "title": "Valid 2",
+                    "total_effort_hours": 8,
+                    "score": 0.83,
+                    "issue_type": "task",
+                },
             ]
         )
-        self.assertIn("1. Valid 1 | est: 2.5h", text)
-        self.assertIn("2. Valid 2 | est: 8h", text)
+        self.assertIn("1. Score: 0.910", text)
+        self.assertIn("Tipo: bug", text)
+        self.assertIn("Horas: 2.5h", text)
+        self.assertIn("Titulo: Valid 1", text)
+        self.assertIn("Descricao: Small localized fix in one preference page.", text)
+        self.assertIn("2. Score: 0.830", text)
+        self.assertIn("Titulo: Valid 2", text)
         self.assertNotIn("No estimate", text)
 
     def test_returns_message_when_no_valid_items(self):
