@@ -4,7 +4,7 @@ from domain.webhook_models import WebhookFlow
 
 
 SUPPORTED_EVENT = "issues"
-SUPPORTED_ACTIONS = {"opened", "edited", "labeled"}
+SUPPORTED_ACTIONS = {"labeled"} 
 ESTIMATION_LABEL = "Estimate"
 PLANNING_LABEL = "Planning"
 
