@@ -14,6 +14,10 @@ from ai.core.effort_calibration import (
     infer_bucket_rank_from_hours,
     rank_to_bucket,
 )
+from ai.core.meta_calibrator import (
+    build_meta_feature_payload,
+    predict_meta_calibration,
+)
 from ai.core.retriever import Retriever
 from ai.core.llm_client import LLMClient
 from ai.core.pinecone_vector_store import PineconeVectorStoreClient
@@ -91,6 +95,16 @@ class CalibratedEstimation(TypedDict, total=False):
     base_confidence: float
     retrieval_route: str
     retrieval_stats: Dict[str, Any]
+    meta_applied: bool
+    meta_hours: float
+    meta_min_hours: float
+    meta_max_hours: float
+    meta_confidence: float
+    meta_source: str
+    meta_prior_source: str
+    meta_prior_count: int
+    meta_blend_weight: float
+    meta_model_version: str
     should_split: bool
     split_reason: str
     evidence: List[str]
@@ -542,6 +556,69 @@ def calibration_node(state: EstimationState) -> EstimationState:
         calibration_source = str(heuristic_calibration.get("calibration_source") or "heuristic_calibration")
         base_confidence = max(0.35, float(heuristic_consensus.get("confidence", 0.35) or 0.35))
 
+    meta_prediction = predict_meta_calibration(
+        build_meta_feature_payload(
+            issue_context=issue,
+            analogical=analogical,
+            heuristic_consensus=heuristic_consensus,
+            heuristic_calibration=heuristic_calibration,
+            calibration_source=calibration_source,
+            retrieval_route=route,
+            retrieval_stats=retrieval_stats,
+            base_hours=base_hours,
+            base_confidence=base_confidence,
+            rule_selected_model=selected_model,
+            complexity_review=complexity_review,
+            agile_guard_review=agile_guard_review,
+            rag_stats=state.get("rag_stats"),
+        )
+    )
+    meta_applied = False
+    if bool(meta_prediction.get("available")):
+        meta_hours = float(meta_prediction.get("estimated_hours") or base_hours)
+        meta_min = float(meta_prediction.get("min_hours") or base_min)
+        meta_max = float(meta_prediction.get("max_hours") or base_max)
+        meta_conf = float(meta_prediction.get("confidence") or 0.0)
+        meta_weight = 0.0
+        if route == "analogical_primary":
+            meta_weight = 0.16
+        elif route == "analogical_support":
+            meta_weight = 0.30
+        elif route == "analogical_soft_signal":
+            meta_weight = 0.48
+        else:
+            meta_weight = 0.56
+
+        prior_source = str(meta_prediction.get("prior_source") or "")
+        prior_count = int(meta_prediction.get("prior_count") or 0)
+        if prior_source == "project":
+            meta_weight -= 0.10
+        elif prior_source in {"project_issue", "project_issue_route"}:
+            meta_weight += 0.03
+        elif prior_source == "project_issue_bucket":
+            meta_weight += 0.07
+        if prior_count >= 8:
+            meta_weight += 0.05
+        if meta_conf < 0.5:
+            meta_weight -= 0.10
+        if route == "analogical_support" and top1_score >= 0.78:
+            meta_weight -= 0.05
+        meta_weight = max(0.10, min(0.68, meta_weight))
+
+        base_hours = round((base_hours * (1.0 - meta_weight)) + (meta_hours * meta_weight), 1)
+        base_min = round(min(base_min, (base_min * (1.0 - meta_weight)) + (meta_min * meta_weight)), 1)
+        base_max = round(max(base_max, (base_max * (1.0 - meta_weight)) + (meta_max * meta_weight)), 1)
+        base_rank = infer_bucket_rank_from_hours(
+            base_hours,
+            hours_pool=profile.get("selected_hours") or profile.get("all_hours"),
+        )
+        base_confidence = max(
+            0.32,
+            min(0.86, (base_confidence * (1.0 - (meta_weight * 0.55))) + (meta_conf * (meta_weight * 0.55))),
+        )
+        calibration_source = f"{calibration_source}+{meta_prediction.get('meta_source') or 'meta_linear'}"
+        meta_applied = meta_weight >= 0.14
+
     agile_delta = int(agile_guard_review.get("bucket_delta") or 0)
     if agile_delta:
         agile_rank = clamp_bucket_rank(base_rank + agile_delta)
@@ -603,6 +680,16 @@ def calibration_node(state: EstimationState) -> EstimationState:
         "base_confidence": round(base_confidence, 4),
         "retrieval_route": route,
         "retrieval_stats": dict(analogical.get("retrieval_stats") or {}),
+        "meta_applied": bool(meta_applied),
+        "meta_hours": round(float(meta_prediction.get("estimated_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_min_hours": round(float(meta_prediction.get("min_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_max_hours": round(float(meta_prediction.get("max_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_confidence": round(float(meta_prediction.get("confidence") or 0.0), 4) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_source": str(meta_prediction.get("meta_source") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_prior_source": str(meta_prediction.get("prior_source") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_prior_count": int(meta_prediction.get("prior_count") or 0) if bool(meta_prediction.get("available")) else 0,
+        "meta_blend_weight": round(float(meta_weight), 4) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_model_version": str(meta_prediction.get("model_version") or "") if bool(meta_prediction.get("available")) else "",
         "should_split": should_split,
         "split_reason": split_reason,
         "evidence": [
@@ -610,6 +697,7 @@ def calibration_node(state: EstimationState) -> EstimationState:
             f"adjusted_hours={round(adjusted_hours, 1)}",
             f"heuristic_bucket={heuristic_consensus.get('size_bucket')}",
             f"analogical_route={route}",
+            f"meta_applied={str(meta_applied).lower()}",
         ],
     }
 

@@ -65,6 +65,8 @@ def _build_justification(
     size_bucket = str(calibrated_estimation.get("size_bucket") or "M")
     calibration_source = str(calibrated_estimation.get("calibration_source") or "unknown")
     adjustment_delta = _safe_float(calibrated_estimation.get("adjustment_delta"), 0.0)
+    meta_applied = bool(calibrated_estimation.get("meta_applied"))
+    meta_source = str(calibrated_estimation.get("meta_source") or "").strip()
 
     parts = [
         f"Finalized via {finalization_mode}",
@@ -72,6 +74,8 @@ def _build_justification(
         f"calibrated from {calibration_source}",
         f"retrieval route {route}",
     ]
+    if meta_applied and meta_source:
+        parts.append(f"meta-calibrated with {meta_source}")
     if analogical and analogical.get("estimated_hours") is not None:
         parts.append(f"analogical base {_safe_float(analogical.get('estimated_hours')):.1f}h")
     if adjustment_delta > 0.2:
@@ -156,6 +160,16 @@ def combine_multi_agent_estimations(
         "base_hours": calibrated.get("base_hours"),
         "adjusted_hours": calibrated.get("adjusted_hours", calibrated.get("base_hours")),
         "adjustment_delta": calibrated.get("adjustment_delta"),
+        "meta_applied": calibrated.get("meta_applied"),
+        "meta_hours": calibrated.get("meta_hours"),
+        "meta_min_hours": calibrated.get("meta_min_hours"),
+        "meta_max_hours": calibrated.get("meta_max_hours"),
+        "meta_confidence": calibrated.get("meta_confidence"),
+        "meta_source": calibrated.get("meta_source"),
+        "meta_prior_source": calibrated.get("meta_prior_source"),
+        "meta_prior_count": calibrated.get("meta_prior_count"),
+        "meta_blend_weight": calibrated.get("meta_blend_weight"),
+        "meta_model_version": calibrated.get("meta_model_version"),
         "retrieval_route": calibrated.get("retrieval_route") or (analogical or {}).get("retrieval_route"),
         "retrieval_stats": calibrated.get("retrieval_stats") or (analogical or {}).get("retrieval_stats") or {},
         "agent_trace": {

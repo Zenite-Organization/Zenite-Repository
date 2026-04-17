@@ -78,6 +78,16 @@ class TestValidationScript(unittest.TestCase):
                 "finalization_mode": "analogical_calibrated",
                 "dominant_strategy": "analogical_consensus",
                 "selected_model": "analogical_calibrated",
+                "meta_applied": True,
+                "meta_hours": 5.9,
+                "meta_min_hours": 4.4,
+                "meta_max_hours": 7.7,
+                "meta_confidence": 0.66,
+                "meta_source": "meta_linear+project_issue",
+                "meta_prior_source": "project_issue",
+                "meta_prior_count": 9,
+                "meta_blend_weight": 0.34,
+                "meta_model_version": "meta_calibrator_v1",
             },
             "execution_metrics": {
                 "workflow_latency_ms": 900,
@@ -153,6 +163,11 @@ class TestValidationScript(unittest.TestCase):
         self.assertEqual(payload["base_hours"], 5.6)
         self.assertEqual(payload["adjusted_hours"], 6.2)
         self.assertEqual(payload["adjustment_delta"], 0.6)
+        self.assertEqual(payload["meta_applied"], 1)
+        self.assertEqual(payload["meta_hours"], 5.9)
+        self.assertEqual(payload["meta_source"], "meta_linear+project_issue")
+        self.assertEqual(payload["meta_prior_source"], "project_issue")
+        self.assertEqual(payload["meta_prior_count"], 9)
         self.assertEqual(payload["calibration_source"], "focused_neighbors")
         self.assertEqual(payload["analogical_hours"], 4.5)
         self.assertEqual(payload["heuristic_scope_hours"], 5.0)
@@ -168,6 +183,7 @@ class TestValidationScript(unittest.TestCase):
         self.assertEqual(trace["selected_model"], "analogical_calibrated")
         self.assertEqual(trace["calibrated_estimation"]["base_hours"], 5.6)
         self.assertEqual(trace["calibrated_estimation"]["adjusted_hours"], 6.2)
+        self.assertEqual(trace["calibrated_estimation"]["meta_source"], "meta_linear+project_issue")
 
     def test_build_upsert_sql_includes_optional_diagnostic_columns(self):
         sql = str(

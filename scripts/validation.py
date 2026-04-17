@@ -67,6 +67,16 @@ VALIDATION_DIAGNOSTIC_COLUMNS = {
     "base_hours": "DOUBLE NULL",
     "adjusted_hours": "DOUBLE NULL",
     "adjustment_delta": "DOUBLE NULL",
+    "meta_applied": "TINYINT(1) NULL",
+    "meta_hours": "DOUBLE NULL",
+    "meta_min_hours": "DOUBLE NULL",
+    "meta_max_hours": "DOUBLE NULL",
+    "meta_confidence": "DOUBLE NULL",
+    "meta_source": "VARCHAR(128) NULL",
+    "meta_prior_source": "VARCHAR(64) NULL",
+    "meta_prior_count": "INT NULL",
+    "meta_blend_weight": "DOUBLE NULL",
+    "meta_model_version": "VARCHAR(64) NULL",
     "final_min_hours": "DOUBLE NULL",
     "final_max_hours": "DOUBLE NULL",
     "final_should_split": "TINYINT(1) NULL",
@@ -453,6 +463,14 @@ def build_validation_payload(
                 "base_hours": maybe_float(calibrated_estimation.get("base_hours")),
                 "adjusted_hours": maybe_float(calibrated_estimation.get("adjusted_hours")),
                 "adjustment_delta": maybe_float(calibrated_estimation.get("adjustment_delta")),
+                "meta_applied": bool(calibrated_estimation.get("meta_applied")),
+                "meta_hours": maybe_float(calibrated_estimation.get("meta_hours")),
+                "meta_confidence": maybe_float(calibrated_estimation.get("meta_confidence")),
+                "meta_source": maybe_text(calibrated_estimation.get("meta_source")),
+                "meta_prior_source": maybe_text(calibrated_estimation.get("meta_prior_source")),
+                "meta_prior_count": maybe_int(calibrated_estimation.get("meta_prior_count")),
+                "meta_blend_weight": maybe_float(calibrated_estimation.get("meta_blend_weight")),
+                "meta_model_version": maybe_text(calibrated_estimation.get("meta_model_version")),
                 "calibration_source": maybe_text(calibrated_estimation.get("calibration_source")),
             },
             "analogical": {
@@ -536,6 +554,16 @@ def build_validation_payload(
         "base_hours": maybe_float(final_estimation.get("base_hours") or calibrated_estimation.get("base_hours")),
         "adjusted_hours": maybe_float(final_estimation.get("adjusted_hours") or calibrated_estimation.get("adjusted_hours")),
         "adjustment_delta": maybe_float(final_estimation.get("adjustment_delta") or calibrated_estimation.get("adjustment_delta")),
+        "meta_applied": maybe_bool_int(calibrated_estimation.get("meta_applied")),
+        "meta_hours": maybe_float(calibrated_estimation.get("meta_hours")),
+        "meta_min_hours": maybe_float(calibrated_estimation.get("meta_min_hours")),
+        "meta_max_hours": maybe_float(calibrated_estimation.get("meta_max_hours")),
+        "meta_confidence": maybe_float(calibrated_estimation.get("meta_confidence")),
+        "meta_source": maybe_text(calibrated_estimation.get("meta_source")),
+        "meta_prior_source": maybe_text(calibrated_estimation.get("meta_prior_source")),
+        "meta_prior_count": maybe_int(calibrated_estimation.get("meta_prior_count")),
+        "meta_blend_weight": maybe_float(calibrated_estimation.get("meta_blend_weight")),
+        "meta_model_version": maybe_text(calibrated_estimation.get("meta_model_version")),
         "final_min_hours": maybe_float(final_estimation.get("min_hours")),
         "final_max_hours": maybe_float(final_estimation.get("max_hours")),
         "final_should_split": maybe_bool_int(final_estimation.get("should_split")),
@@ -656,7 +684,7 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
                 x.resolution_date IS NOT NULL
                 AND x.status IN ('Closed','Done','Resolved','Complete')
                 AND x.resolution IN ('Fixed','Done','Complete','Completed','Works as Designed')
-                AND cast((x.total_effort_minutes / 60) as SIGNED) BETWEEN 1 AND 40
+                AND (x.total_effort_minutes / 60.0) BETWEEN 1 AND 40
                 AND length(x.description_text) >= 100
                 AND x.project_id = :project_id
         ) i

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # Max number of high-level review branches executed in parallel for one issue:
     # analogical, heuristic ensemble, complexity review, and agile guard.
     PRIMARY_AGENT_MAX_CONCURRENCY: int = 4
+    META_CALIBRATOR_ENABLED: bool = True
+    META_CALIBRATOR_MODEL_PATH: str = "artifacts/meta_calibrator.json"
+    META_CALIBRATOR_MIN_SEGMENT_COUNT: int = 3
+    META_CALIBRATOR_MAX_PRIOR_WEIGHT: float = 0.55
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14

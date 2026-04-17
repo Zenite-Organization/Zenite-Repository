@@ -9,7 +9,7 @@ from ai.core.rag_namespace_policy import (
     group_issue_namespaces,
 )
 from ai.core.rag_normalizer import normalize_match
-from ai.core.rag_ranker import join_issue_context
+from ai.core.rag_ranker import join_issue_context, rerank_issue_context
 
 
 logger = logging.getLogger(__name__)
@@ -209,6 +209,7 @@ class Retriever:
         )[:target_size]
 
         normalized = [normalize_match(match) for match in qualified_raw_matches]
+        normalized = rerank_issue_context(normalized, issue_payload)
         joined = join_issue_context(normalized)
         context = sorted(joined, key=lambda it: float(it.get("score") or 0.0), reverse=True)[
             :target_size

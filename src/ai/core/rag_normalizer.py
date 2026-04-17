@@ -25,6 +25,15 @@ def _extract_text(metadata: Dict[str, Any], keys: list[str]) -> str:
     return ""
 
 
+def _extract_labels(metadata: Dict[str, Any]) -> list[str]:
+    raw = metadata.get("labels")
+    if isinstance(raw, list):
+        return [str(item).strip().lower() for item in raw if str(item).strip()]
+    if isinstance(raw, str) and raw.strip():
+        return [item.strip().lower() for item in raw.split(",") if item.strip()]
+    return []
+
+
 def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
     metadata = dict(raw.get("metadata") or {})
     namespace = str(raw.get("namespace") or "")
@@ -59,6 +68,7 @@ def normalize_match(raw: Dict[str, Any]) -> Dict[str, Any]:
         "id": str(raw.get("id") or ""),
         "project_key": str(metadata.get("project_key") or "").lower(),
         "issue_type": metadata.get("issue_type"),
+        "labels": _extract_labels(metadata),
         "namespace": namespace,
         "doc_type": doc_type,
         "issue_id": issue_id,
