@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Sequence
 
 
@@ -28,6 +29,29 @@ MODE_BUCKET_WEIGHTS: dict[str, float] = {
     "uncertainty": 0.55,
     "agile_fit": 0.7,
 }
+HOUR_RANGES: tuple[tuple[int, int], ...] = (
+    (1, 3),
+    (3, 6),
+    (6, 9),
+    (9, 12),
+    (12, 15),
+    (15, 18),
+    (18, 21),
+    (21, 24),
+    (24, 27),
+    (27, 30),
+    (30, 33),
+    (33, 36),
+    (36, 40),
+)
+DEFAULT_BUCKET_RANGE_INDEX: dict[int, int] = {
+    1: 1,
+    2: 2,
+    3: 4,
+    4: 7,
+    5: 10,
+    6: 12,
+}
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -35,6 +59,67 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def _round_half_up(value: float) -> int:
+    return int(math.floor(float(value) + 0.5))
+
+
+def clamp_supported_hours(hours: Any) -> float:
+    value = safe_float(hours, 1.0)
+    return max(1.0, min(40.0, value))
+
+
+def clamp_range_index(index: Any) -> int:
+    try:
+        numeric = int(round(float(index)))
+    except Exception:
+        numeric = 1
+    return max(1, min(len(HOUR_RANGES), numeric))
+
+
+def range_index_to_bounds(index: Any) -> tuple[int, int]:
+    return HOUR_RANGES[clamp_range_index(index) - 1]
+
+
+def range_index_to_label(index: Any) -> str:
+    low, high = range_index_to_bounds(index)
+    return f"{low}-{high}h"
+
+
+def range_index_to_midpoint(index: Any) -> int:
+    low, high = range_index_to_bounds(index)
+    return _round_half_up((float(low) + float(high)) / 2.0)
+
+
+def range_index_to_payload(index: Any) -> Dict[str, Any]:
+    range_index = clamp_range_index(index)
+    range_min, range_max = range_index_to_bounds(range_index)
+    return {
+        "range_index": range_index,
+        "range_label": range_index_to_label(range_index),
+        "range_min_hours": range_min,
+        "range_max_hours": range_max,
+        "display_hours": range_index_to_midpoint(range_index),
+    }
+
+
+def hours_to_range_index(hours: Any) -> int:
+    value = clamp_supported_hours(hours)
+    for idx, (low, high) in enumerate(HOUR_RANGES, start=1):
+        if idx == len(HOUR_RANGES):
+            if low <= value <= high:
+                return idx
+        elif low <= value < high:
+            return idx
+    return len(HOUR_RANGES)
+
+
+def hours_to_range_payload(hours: Any) -> Dict[str, Any]:
+    bounded_hours = clamp_supported_hours(hours)
+    out = dict(range_index_to_payload(hours_to_range_index(bounded_hours)))
+    out["bounded_hours"] = round(bounded_hours, 1)
+    return out
 
 
 def clamp_bucket_rank(rank: Any) -> int:
@@ -47,6 +132,25 @@ def clamp_bucket_rank(rank: Any) -> int:
 
 def rank_to_bucket(rank: Any) -> str:
     return BUCKETS[clamp_bucket_rank(rank) - 1]
+
+
+def bucket_rank_to_default_range_index(rank: Any) -> int:
+    return clamp_range_index(DEFAULT_BUCKET_RANGE_INDEX[clamp_bucket_rank(rank)])
+
+
+def range_index_to_bucket_rank(index: Any) -> int:
+    range_index = clamp_range_index(index)
+    if range_index <= 1:
+        return 1
+    if range_index <= 3:
+        return 2
+    if range_index <= 5:
+        return 3
+    if range_index <= 8:
+        return 4
+    if range_index <= 11:
+        return 5
+    return 6
 
 
 def bucket_to_rank(bucket: Any) -> int:
@@ -257,7 +361,7 @@ def calibrate_bucket_rank_to_hours(
         max_hours = estimated * 1.35
         calibration_source = "default_prior"
 
-    return {
+    out = {
         "size_bucket": rank_to_bucket(rank),
         "bucket_rank": rank,
         "estimated_hours": round(max(1.0, estimated), 1),
@@ -265,6 +369,8 @@ def calibrate_bucket_rank_to_hours(
         "max_hours": round(max(max_hours, estimated), 1),
         "calibration_source": calibration_source,
     }
+    out.update(hours_to_range_payload(out["estimated_hours"]))
+    return out
 
 
 def aggregate_bucket_consensus(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -313,6 +419,67 @@ def aggregate_bucket_consensus(candidates: List[Dict[str, Any]]) -> Dict[str, An
         "bucket_rank": final_rank,
         "confidence": round(confidence, 4),
         "candidate_count": len(ranks),
+        "spread": spread,
+    }
+
+
+def aggregate_range_consensus(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+    range_points: List[float] = []
+    weights: List[float] = []
+    core_ranges: List[int] = []
+
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        range_index = candidate.get("range_index")
+        if range_index in (None, ""):
+            estimated_hours = candidate.get("estimated_hours")
+            if estimated_hours not in (None, ""):
+                range_index = hours_to_range_index(estimated_hours)
+            else:
+                bucket_rank = candidate.get("bucket_rank")
+                if bucket_rank in (None, ""):
+                    bucket_rank = bucket_to_rank(candidate.get("size_bucket"))
+                range_index = bucket_rank_to_default_range_index(bucket_rank)
+        coerced_range = clamp_range_index(range_index)
+        confidence = max(0.05, min(0.95, safe_float(candidate.get("confidence"), 0.5)))
+        mode = str(candidate.get("mode") or candidate.get("source") or "").strip().lower()
+        mode_weight = MODE_BUCKET_WEIGHTS.get(mode, 1.0)
+        range_points.append(float(coerced_range))
+        weights.append((0.35 + confidence) * mode_weight)
+        if mode in {"scope", "complexity"}:
+            core_ranges.append(coerced_range)
+
+    if not range_points:
+        fallback_range = range_index_to_payload(bucket_rank_to_default_range_index(3))
+        return {
+            **fallback_range,
+            "size_bucket": rank_to_bucket(3),
+            "bucket_rank": 3,
+            "confidence": 0.25,
+            "candidate_count": 0,
+            "spread": 0,
+        }
+
+    weighted_range = _weighted_percentile(range_points, weights, 0.5)
+    if len(core_ranges) >= 2:
+        core_avg = sum(core_ranges) / len(core_ranges)
+        if core_avg >= 7.0 and weighted_range < 6.0:
+            weighted_range = min(7.0, weighted_range + 1.2)
+        elif core_avg >= 5.5 and weighted_range < 5.0:
+            weighted_range = min(5.5, weighted_range + 0.8)
+    final_range_index = clamp_range_index(weighted_range)
+    spread = int(max(range_points) - min(range_points)) if range_points else 0
+    avg_confidence = sum(weights) / len(weights) - 0.35
+    confidence = max(0.1, min(0.92, avg_confidence - 0.05 * spread))
+    bucket_rank = range_index_to_bucket_rank(final_range_index)
+
+    return {
+        **range_index_to_payload(final_range_index),
+        "size_bucket": rank_to_bucket(bucket_rank),
+        "bucket_rank": bucket_rank,
+        "confidence": round(confidence, 4),
+        "candidate_count": len(range_points),
         "spread": spread,
     }
 
@@ -404,7 +571,7 @@ def weighted_neighbor_estimate(
     confidence = 0.52 + min(0.28, 0.09 * len(candidates)) + min(0.12, top_weight_ratio * 0.12)
     confidence -= min(0.15, 0.05 * max(0, len(set(int(round(h)) for h in hours)) - 2))
 
-    return {
+    out = {
         "estimated_hours": round(max(1.0, estimated), 1),
         "min_hours": round(max(1.0, min(min_hours, estimated)), 1),
         "max_hours": round(max(max_hours, estimated), 1),
@@ -416,6 +583,113 @@ def weighted_neighbor_estimate(
         "supporting_hours": [round(item, 1) for item in hours],
         "weighted_hours": [round(item, 4) for item in weights],
     }
+    out.update(hours_to_range_payload(out["estimated_hours"]))
+    return out
+
+
+def weighted_neighbor_range_estimate(
+    issue_context: Dict[str, Any],
+    similar_issues: List[Dict[str, Any]],
+    useful_score_threshold: float = 0.68,
+    top_k: int = 5,
+) -> Dict[str, Any]:
+    profile = build_calibration_profile(
+        issue_context=issue_context,
+        similar_issues=similar_issues,
+        useful_score_threshold=useful_score_threshold,
+    )
+    normalized = list(profile.get("normalized") or [])
+    useful = [item for item in normalized if item["score"] >= useful_score_threshold]
+    focused = [item for item in useful if item["same_type"] or item["label_overlap"] > 0]
+    focused_any = [item for item in normalized if item["same_type"] or item["label_overlap"] > 0]
+    type_prior = [item for item in normalized if item["same_type"]]
+    label_prior = [item for item in normalized if item["label_overlap"] > 0]
+
+    candidate_source = "default_prior"
+    candidates: List[Dict[str, Any]] = []
+    if len(focused) >= 2:
+        candidates = focused[:top_k]
+        candidate_source = "focused_neighbors"
+    elif len(useful) >= 2:
+        candidates = useful[:top_k]
+        candidate_source = "useful_neighbors"
+    elif len(focused_any) >= 2:
+        candidates = focused_any[:top_k]
+        candidate_source = "focused_prior"
+    elif len(type_prior) >= 2:
+        candidates = type_prior[:top_k]
+        candidate_source = "type_prior"
+    elif len(label_prior) >= 2:
+        candidates = label_prior[:top_k]
+        candidate_source = "label_prior"
+    elif len(normalized) >= 2:
+        candidates = normalized[: min(top_k, len(normalized))]
+        candidate_source = "all_neighbors"
+
+    if not candidates:
+        fallback_range = range_index_to_payload(bucket_rank_to_default_range_index(3))
+        fallback = {
+            "estimated_hours": float(fallback_range["display_hours"]),
+            "estimated_hours_raw": float(fallback_range["display_hours"]),
+            "min_hours": float(fallback_range["range_min_hours"]),
+            "max_hours": float(fallback_range["range_max_hours"]),
+            "size_bucket": rank_to_bucket(range_index_to_bucket_rank(fallback_range["range_index"])),
+            "bucket_rank": range_index_to_bucket_rank(fallback_range["range_index"]),
+            "calibration_source": "default_prior",
+            "confidence": 0.25,
+            "neighbor_count": 0,
+            "supporting_hours": [],
+            "weighted_hours": [],
+            "supporting_ranges": [],
+        }
+        fallback.update(fallback_range)
+        return fallback
+
+    range_points: List[float] = []
+    weights: List[float] = []
+    hours: List[float] = []
+    for item in candidates:
+        score = max(0.01, item["score"])
+        weight = (score ** 4) / (1.0 + (0.18 * item["index"]))
+        if item["same_type"]:
+            weight *= 1.15
+        if item["label_overlap"] > 0:
+            weight *= 1.0 + min(0.12, 0.04 * item["label_overlap"])
+        hour_value = float(item["hours"])
+        hours.append(hour_value)
+        weights.append(weight)
+        range_points.append(float(hours_to_range_index(hour_value)))
+
+    estimated_range = clamp_range_index(_weighted_percentile(range_points, weights, 0.5))
+    min_range = clamp_range_index(_weighted_percentile(range_points, weights, 0.2))
+    max_range = clamp_range_index(_weighted_percentile(range_points, weights, 0.8))
+    range_payload = range_index_to_payload(estimated_range)
+    min_payload = range_index_to_payload(min_range)
+    max_payload = range_index_to_payload(max_range)
+    bucket_rank = range_index_to_bucket_rank(estimated_range)
+
+    total_weight = sum(weights)
+    top_weight_ratio = max(weights) / total_weight if total_weight > 0 else 1.0
+    range_spread = max(range_points) - min(range_points) if range_points else 0.0
+    confidence = 0.50 + min(0.24, 0.08 * len(candidates)) + min(0.12, top_weight_ratio * 0.12)
+    confidence -= min(0.18, 0.04 * range_spread)
+
+    out = {
+        "estimated_hours": float(range_payload["display_hours"]),
+        "estimated_hours_raw": float(range_payload["display_hours"]),
+        "min_hours": float(min_payload["range_min_hours"]),
+        "max_hours": float(max_payload["range_max_hours"]),
+        "size_bucket": rank_to_bucket(bucket_rank),
+        "bucket_rank": bucket_rank,
+        "calibration_source": candidate_source,
+        "confidence": round(max(0.2, min(0.92, confidence)), 4),
+        "neighbor_count": len(candidates),
+        "supporting_hours": [round(item, 1) for item in hours],
+        "weighted_hours": [round(item, 4) for item in weights],
+        "supporting_ranges": [range_index_to_label(item) for item in range_points],
+    }
+    out.update(range_payload)
+    return out
 
 
 def bounded_adjustment_from_reviews(

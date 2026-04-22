@@ -34,10 +34,41 @@ def _parse_csv_env(name: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _env_bool(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _dedupe_latest_issue_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest_by_issue: dict[Any, dict[str, Any]] = {}
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("predicted_at") or ""),
+            str(row.get("validation_run_id") or ""),
+        ),
+        reverse=True,
+    )
+    for row in ordered:
+        issue_id = row.get("issue_id")
+        if issue_id not in latest_by_issue:
+            latest_by_issue[issue_id] = row
+    return sorted(
+        latest_by_issue.values(),
+        key=lambda row: (
+            str(row.get("predicted_at") or ""),
+            int(row.get("issue_id") or 0),
+        ),
+    )
+
+
 def fetch_training_rows(engine) -> list[dict[str, Any]]:
     run_ids = _parse_csv_env("TRAIN_VALIDATION_RUN_IDS")
     project_keys = [item.lower() for item in _parse_csv_env("TRAIN_PROJECT_KEYS")]
     predicted_at_from = str(os.getenv("TRAIN_PREDICTED_AT_FROM") or "").strip()
+    latest_per_issue = _env_bool("TRAIN_LATEST_PER_ISSUE", True)
     min_hours = float(os.getenv("TRAIN_MIN_ACTUAL_HOURS", "1") or 1)
     max_hours = float(os.getenv("TRAIN_MAX_ACTUAL_HOURS", "40") or 40)
 
@@ -72,6 +103,9 @@ def fetch_training_rows(engine) -> list[dict[str, Any]]:
     sql = text(
         f"""
         SELECT
+          v.issue_id,
+          v.validation_run_id,
+          v.predicted_at,
           v.project_key,
           LOWER(COALESCE(NULLIF(x.type, ''), 'unknown')) AS issue_type,
           v.selected_model,
@@ -109,7 +143,14 @@ def fetch_training_rows(engine) -> list[dict[str, Any]]:
 
     with engine.connect() as conn:
         rows = conn.execute(sql, params).mappings().all()
-        return [dict(row) for row in rows]
+        normalized = [dict(row) for row in rows]
+        fetch_training_rows.last_raw_count = len(normalized)  # type: ignore[attr-defined]
+        if latest_per_issue:
+            selected = _dedupe_latest_issue_rows(normalized)
+            fetch_training_rows.last_selected_count = len(selected)  # type: ignore[attr-defined]
+            return selected
+        fetch_training_rows.last_selected_count = len(normalized)  # type: ignore[attr-defined]
+        return normalized
 
 
 def main():
@@ -129,10 +170,15 @@ def main():
 
     summary = model.get("training_summary") or {}
     predicted_at_from = str(os.getenv("TRAIN_PREDICTED_AT_FROM") or "").strip()
+    latest_per_issue = _env_bool("TRAIN_LATEST_PER_ISSUE", True)
+    raw_rows = int(getattr(fetch_training_rows, "last_raw_count", len(rows)))
+    selected_rows = int(getattr(fetch_training_rows, "last_selected_count", len(rows)))
     print(
-        f"[META] rows={summary.get('row_count')} "
+        f"[META] raw_rows={raw_rows} selected_rows={selected_rows} rows={summary.get('row_count')} "
         f"approx_mae_hours={summary.get('approx_mae_hours')} "
+        f"target_mode={summary.get('target_mode', 'unknown')} "
         f"predicted_at_from={predicted_at_from or '-'} "
+        f"latest_per_issue={str(latest_per_issue).lower()} "
         f"output={saved_path}"
     )
 

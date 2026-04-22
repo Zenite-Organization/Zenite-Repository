@@ -27,7 +27,10 @@ class RunIssueEstimationUseCase:
         min_hours = estimation.get("min_hours")
         max_hours = estimation.get("max_hours")
         model_name = estimation.get("estimation_model", "unknown")
-        justification = estimation.get("justification", "")
+        justification = (
+            estimation.get("user_justification")
+            or estimation.get("justification", "")
+        )
         should_split = bool(estimation.get("should_split", False))
         split_reason = estimation.get("split_reason")
 

@@ -22,6 +22,11 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
                 "adjustment_delta": 1.2,
                 "min_hours": 7.0,
                 "max_hours": 11.0,
+                "range_label": "9-12h",
+                "range_index": 4,
+                "range_min_hours": 9,
+                "range_max_hours": 12,
+                "display_hours": 11,
                 "size_bucket": "M",
                 "bucket_rank": 3,
                 "calibration_source": "focused_neighbors",
@@ -32,11 +37,15 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
                 "retrieval_route": "analogical_primary",
             },
         )
-        self.assertEqual(out["estimated_hours"], 9.2)
+        self.assertEqual(out["estimated_hours"], 11)
+        self.assertEqual(out["estimated_hours_raw"], 9.2)
+        self.assertEqual(out["range_label"], "9-12h")
         self.assertEqual(out["base_hours"], 8.0)
         self.assertEqual(out["adjustment_delta"], 1.2)
         self.assertEqual(out["finalization_mode"], "analogical_calibrated")
         self.assertEqual(out["dominant_strategy"], "analogical_consensus")
+        self.assertIn("9-12h", out["justification"])
+        self.assertIn("analogical_calibrated", out["analysis_justification"])
 
     def test_confidence_penalized_on_high_bucket_spread(self):
         narrow = combine_multi_agent_estimations(
@@ -55,6 +64,11 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
                 "adjusted_hours": 8.0,
                 "min_hours": 7.0,
                 "max_hours": 9.0,
+                "range_label": "6-9h",
+                "range_index": 3,
+                "range_min_hours": 6,
+                "range_max_hours": 9,
+                "display_hours": 8,
                 "size_bucket": "M",
                 "bucket_rank": 3,
                 "finalization_mode": "heuristic_bucket_calibrated",
@@ -80,6 +94,11 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
                 "adjusted_hours": 8.0,
                 "min_hours": 7.0,
                 "max_hours": 9.0,
+                "range_label": "6-9h",
+                "range_index": 3,
+                "range_min_hours": 6,
+                "range_max_hours": 9,
+                "display_hours": 8,
                 "size_bucket": "M",
                 "bucket_rank": 3,
                 "finalization_mode": "heuristic_bucket_calibrated",
@@ -111,6 +130,11 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
                 "adjusted_hours": 18.0,
                 "min_hours": 14.0,
                 "max_hours": 22.0,
+                "range_label": "18-21h",
+                "range_index": 7,
+                "range_min_hours": 18,
+                "range_max_hours": 21,
+                "display_hours": 20,
                 "size_bucket": "L",
                 "bucket_rank": 4,
                 "finalization_mode": "heuristic_bucket_calibrated",

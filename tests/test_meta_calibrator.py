@@ -45,6 +45,7 @@ class TestMetaCalibrator(unittest.TestCase):
         self.assertEqual(mapped["project_key"], "tistud")
         self.assertEqual(mapped["issue_type"], "bug")
         self.assertEqual(mapped["heuristic_size_bucket"], "m")
+        self.assertEqual(mapped["base_hours"], 8.0)
         self.assertEqual(mapped["actual_hours"], 9.0)
         self.assertGreater(mapped["analogical_log_hours"], mapped["heuristic_log_hours"])
 
@@ -422,10 +423,68 @@ class TestMetaCalibrator(unittest.TestCase):
                 settings.META_CALIBRATOR_MIN_SEGMENT_COUNT = previous_min_count
 
         self.assertTrue(predicted["available"])
-        self.assertEqual(predicted["prior_source"], "project_issue_bucket")
+        self.assertEqual(predicted["prior_source"], "project_issue_route_bucket")
         self.assertGreaterEqual(predicted["prior_count"], 3)
-        self.assertGreater(predicted["estimated_hours"], 5.0)
-        self.assertLess(predicted["estimated_hours"], 10.0)
+        self.assertGreater(predicted["estimated_hours"], 6.0)
+        self.assertLess(predicted["estimated_hours"], 9.0)
+
+    def test_predict_meta_calibration_bounds_weak_route_correction(self):
+        manual_model = {
+            "model_type": "segmented_linear_residual",
+            "model_version": "meta_calibrator_v2",
+            "linear_model": {
+                "bias": 1.0,
+                "weights": {},
+                "means": {},
+                "scales": {},
+                "features": [],
+            },
+            "category_adjustments": {},
+            "segment_priors": {},
+        }
+
+        previous_path = settings.META_CALIBRATOR_MODEL_PATH
+        previous_enabled = settings.META_CALIBRATOR_ENABLED
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "meta.json"
+            save_meta_model(manual_model, output)
+            settings.META_CALIBRATOR_MODEL_PATH = str(output)
+            settings.META_CALIBRATOR_ENABLED = True
+            try:
+                predicted = predict_meta_calibration(
+                    {
+                        "project_key": "tistud",
+                        "issue_type": "bug",
+                        "retrieval_route": "analogical_weak",
+                        "heuristic_size_bucket": "m",
+                        "size_bucket": "m",
+                        "calibration_source": "focused_prior",
+                        "rule_selected_model": "heuristic_bucket_calibrated",
+                        "base_log_hours": 2.197224577,
+                        "analogical_log_hours": 2.197224577,
+                        "heuristic_log_hours": 2.197224577,
+                        "bucket_rank": 3,
+                        "heuristic_bucket_rank": 3,
+                        "analogical_bucket_rank": 3,
+                        "top1_score": 0.55,
+                        "top3_avg_score": 0.54,
+                        "useful_count": 0,
+                        "hours_spread": 1.2,
+                        "analogical_confidence": 0.35,
+                        "heuristic_confidence": 0.62,
+                        "base_confidence": 0.58,
+                        "bucket_gap": 0,
+                        "rag_context_sufficient": 1,
+                        "complexity_bucket_delta": 0,
+                        "agile_guard_bucket_delta": 0,
+                    }
+                )
+            finally:
+                settings.META_CALIBRATOR_MODEL_PATH = previous_path
+                settings.META_CALIBRATOR_ENABLED = previous_enabled
+
+        self.assertTrue(predicted["available"])
+        self.assertEqual(predicted["estimated_hours"], 10.0)
 
 
 if __name__ == "__main__":

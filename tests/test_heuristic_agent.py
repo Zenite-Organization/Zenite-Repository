@@ -10,7 +10,7 @@ class _CaptureLLM:
 
     def send_prompt(self, _prompt: str, **kwargs) -> str:
         self.last_kwargs = kwargs
-        return '{"size_bucket":"S","bucket_rank":2,"confidence":0.6,"justification":"ok"}'
+        return '{"range_index":2,"range_label":"3-6h","confidence":0.6,"justification":"ok"}'
 
     def get_last_token_usage(self):
         return self.last_usage
@@ -26,6 +26,9 @@ class TestHeuristicAgent(unittest.TestCase):
         )
         self.assertEqual(out["size_bucket"], "S")
         self.assertEqual(out["bucket_rank"], 2)
+        self.assertEqual(out["range_index"], 2)
+        self.assertEqual(out["range_label"], "3-6h")
+        self.assertEqual(out["estimated_hours"], 5.0)
         self.assertEqual(llm.last_kwargs["temperature"], 0.42)
 
 

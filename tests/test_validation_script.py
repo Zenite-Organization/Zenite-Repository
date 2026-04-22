@@ -12,7 +12,7 @@ class TestValidationScript(unittest.TestCase):
         )
 
     def test_build_validation_payload_includes_calibration_diagnostics(self):
-        row = {"id": 123, "project_id": 77, "project_key": "ZEN"}
+        row = {"id": 123, "project_id": 77, "project_key": "ZEN", "actual_hours": 6.8}
         state = {
             "strategy": "analogical_consensus",
             "rag_context_sufficient": True,
@@ -88,6 +88,11 @@ class TestValidationScript(unittest.TestCase):
                 "meta_prior_count": 9,
                 "meta_blend_weight": 0.34,
                 "meta_model_version": "meta_calibrator_v1",
+                "range_label": "6-9h",
+                "range_index": 3,
+                "range_min_hours": 6,
+                "range_max_hours": 9,
+                "display_hours": 8,
             },
             "execution_metrics": {
                 "workflow_latency_ms": 900,
@@ -102,11 +107,14 @@ class TestValidationScript(unittest.TestCase):
             },
         }
         final_estimation = {
-            "estimated_hours": 6.2,
-            "min_hours": 4.0,
-            "max_hours": 8.0,
+            "estimated_hours": 8,
+            "estimated_hours_raw": 6.2,
+            "min_hours": 6,
+            "max_hours": 9,
             "confidence": 0.7,
-            "justification": "consensus result",
+            "justification": "justificativa amigavel",
+            "user_justification": "justificativa amigavel",
+            "analysis_justification": "consensus result",
             "estimation_model": "analogical+multiagent_consensus",
             "selected_model": "analogical_calibrated",
             "dominant_strategy": "analogical_consensus",
@@ -117,6 +125,11 @@ class TestValidationScript(unittest.TestCase):
             "base_hours": 5.6,
             "adjusted_hours": 6.2,
             "adjustment_delta": 0.6,
+            "range_label": "6-9h",
+            "range_index": 3,
+            "range_min_hours": 6,
+            "range_max_hours": 9,
+            "display_hours": 8,
             "retrieval_route": "analogical_primary",
             "retrieval_stats": state["analogical"]["retrieval_stats"],
             "calibrated_estimation": state["calibrated_estimation"],
@@ -160,6 +173,14 @@ class TestValidationScript(unittest.TestCase):
         self.assertEqual(payload["anchor_overlap"], 0.44)
         self.assertEqual(payload["size_bucket"], "M")
         self.assertEqual(payload["bucket_rank"], 3)
+        self.assertEqual(payload["predicted_hours"], 8)
+        self.assertEqual(payload["predicted_hours_raw"], 6.2)
+        self.assertEqual(payload["predicted_range_label"], "6-9h")
+        self.assertEqual(payload["predicted_range_index"], 3)
+        self.assertEqual(payload["actual_range_label"], "6-9h")
+        self.assertEqual(payload["actual_range_index"], 3)
+        self.assertEqual(payload["range_hit"], 1)
+        self.assertEqual(payload["range_distance"], 0)
         self.assertEqual(payload["base_hours"], 5.6)
         self.assertEqual(payload["adjusted_hours"], 6.2)
         self.assertEqual(payload["adjustment_delta"], 0.6)
@@ -181,6 +202,8 @@ class TestValidationScript(unittest.TestCase):
 
         trace = json.loads(payload["decision_trace_json"])
         self.assertEqual(trace["selected_model"], "analogical_calibrated")
+        self.assertEqual(trace["user_justification"], "justificativa amigavel")
+        self.assertEqual(trace["analysis_justification"], "consensus result")
         self.assertEqual(trace["calibrated_estimation"]["base_hours"], 5.6)
         self.assertEqual(trace["calibrated_estimation"]["adjusted_hours"], 6.2)
         self.assertEqual(trace["calibrated_estimation"]["meta_source"], "meta_linear+project_issue")
@@ -216,9 +239,16 @@ class TestValidationScript(unittest.TestCase):
             row={"id": 1, "project_id": 1, "project_key": "ZEN"},
             state={"strategy": "multiagent_heuristic_consensus"},
             final_estimation={
-                "estimated_hours": 5.0,
+                "estimated_hours": 5,
+                "estimated_hours_raw": 5.0,
+                "range_label": "3-6h",
+                "range_index": 2,
+                "range_min_hours": 3,
+                "range_max_hours": 6,
                 "confidence": 0.6,
                 "justification": "ok",
+                "user_justification": "ok",
+                "analysis_justification": "debug ok",
                 "estimation_model": "multiagent_heuristic_consensus",
             },
             usage={},

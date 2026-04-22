@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     META_CALIBRATOR_ENABLED: bool = True
     META_CALIBRATOR_MODEL_PATH: str = "artifacts/meta_calibrator.json"
     META_CALIBRATOR_MIN_SEGMENT_COUNT: int = 3
-    META_CALIBRATOR_MAX_PRIOR_WEIGHT: float = 0.55
+    META_CALIBRATOR_MAX_PRIOR_WEIGHT: float = 0.30
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14

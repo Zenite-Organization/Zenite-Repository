@@ -27,8 +27,13 @@ class _FakeVectorStore:
         self.responses = responses
         self.namespaces = namespaces
 
-    def semantic_search(self, text, namespaces, top_k=8):
-        return list(self.responses.get(namespaces[0], []))
+    def semantic_search(self, text, namespaces, top_k=8, where=None):
+        # Mimick Pinecone's real behavior: iterate over all requested namespaces
+        # and return matches from every one (preserving namespace in each match).
+        matches = []
+        for ns in namespaces:
+            matches.extend(self.responses.get(ns, []))
+        return matches
 
     def list_namespaces(self):
         return list(self.namespaces)
@@ -77,8 +82,15 @@ class TestRetrieverScoreFilter(unittest.TestCase):
         result = retriever.get_similar_issues(
             {"title": "Issue", "description": "Desc", "repository": "timob/mobile-app"}
         )
+        # Filter removes scores < 0.75 BEFORE rerank. After rerank,
+        # `score` is replaced by rerank_score (semantic * 0.82 + overlap bonuses),
+        # so it can drop below 0.75. What matters is:
+        # 1. Low-score matches (0.2, 0.1) were filtered out — only 2 qualify.
+        # 2. Output is ranked highest-to-lowest by final score.
+        # 3. The matches that survived are the ones that had semantic >= 0.75.
         self.assertEqual(len(result), 2)
-        self.assertTrue(all(float(it["score"]) >= 0.75 for it in result))
+        returned_keys = {it["issue_key"] for it in result}
+        self.assertEqual(returned_keys, {"MOBILE-APP-1", "MULE-3"})
         scores = [float(it["score"]) for it in result]
         self.assertEqual(scores, sorted(scores, reverse=True))
 
