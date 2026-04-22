@@ -1,477 +1,205 @@
-from typing import Dict, Any
+from typing import Any, Dict
+import json
 
+from ai.core.effort_calibration import (
+    bucket_rank_to_default_range_index,
+    bucket_to_rank,
+    clamp_bucket_rank,
+    clamp_range_index,
+    range_index_to_bucket_rank,
+    range_index_to_label,
+    range_index_to_payload,
+    rank_to_bucket,
+)
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
 from ai.core.token_usage import coerce_token_usage
 
-import json
 
-AGILE_HOURS_LIMIT = 40
-DEFAULT_FALLBACK_HOURS = 10
-
-BASELINE_HOURS = {
-    "XS": 2,
-    "S": 5,
-    "M": 10,
-    "L": 18,
-    "XL": 28,
-    "XXL": 40,
+MODE_GUIDANCE = {
+    "scope": {
+        "role": "You are a senior analyst focused on functional scope and delivery breadth.",
+        "focus": [
+            "number of concrete deliverables hidden in the request",
+            "whether the issue reads like a local fix or a broad change",
+            "how many modules or business rules appear to be touched",
+            "whether the work sounds like one outcome or multiple outcomes grouped together",
+        ],
+    },
+    "complexity": {
+        "role": "You are a senior engineer focused on technical complexity and coupling.",
+        "focus": [
+            "integration points and contracts that may be affected",
+            "database, api, auth, queue, cache, or observability changes",
+            "likelihood of regression-sensitive testing",
+            "hidden technical coordination implied by the text",
+        ],
+    },
+    "uncertainty": {
+        "role": "You are a senior analyst focused on ambiguity and discovery risk.",
+        "focus": [
+            "missing details or vague acceptance criteria",
+            "need for investigation before implementation",
+            "dependency on clarification or alignment",
+            "signals that confidence should go down without automatically pushing size up",
+        ],
+    },
+    "agile_fit": {
+        "role": "You are an agile lead focused on healthy issue sizing and split readiness.",
+        "focus": [
+            "whether the issue fits as a single backlog item",
+            "signals of epic-like aggregation",
+            "whether the request should be split into smaller items",
+            "whether the wording indicates too much work for one issue",
+        ],
+    },
 }
 
-SIZE_FLOOR = {
-    "XS": 1,
-    "S": 4,
-    "M": 8,
-    "L": 14,
-    "XL": 20,
-    "XXL": 32,
-}
 
-BASELINE_REFERENCE = """
-Baseline oficial de horas:
-- XS = 2h
-- S = 5h
-- M = 10h
-- L = 18h
-- XL = 28h
-- XXL = 40h
+def _build_prompt(issue_context: Dict[str, Any], mode: str) -> str:
+    guidance = MODE_GUIDANCE[mode]
+    available_ranges = [
+        "1=1-3h",
+        "2=3-6h",
+        "3=6-9h",
+        "4=9-12h",
+        "5=12-15h",
+        "6=15-18h",
+        "7=18-21h",
+        "8=21-24h",
+        "9=24-27h",
+        "10=27-30h",
+        "11=30-33h",
+        "12=33-36h",
+        "13=36-40h",
+    ]
+    instruction = f"""
+You received the full context of a software issue.
 
-Regra central:
-- XXL = limite superior esperado para uma issue saudável.
-- Acima de 40h é EXCEÇÃO.
-- Só estime acima de 40h quando houver evidência textual forte de que a demanda está grande demais para uma única issue.
-"""
+Your task is to estimate the most plausible effort range, not an exact number of hours.
 
-SIZE_GUIDE = """
-Guia de classificação:
-- XS: ajuste pontual, alteração simples e localizada
-- S: pequena alteração localizada, baixo acoplamento
-- M: tarefa padrão com implementação + validação
-- L: múltiplas regras, integração ou impacto em mais de uma parte do sistema
-- XL: escopo grande, dependências relevantes ou múltiplos pontos de implementação
-- XXL: limite superior aceitável para uma única issue refinada
-"""
+Rules:
+- Choose one ordinal range only from this catalog:
+{chr(10).join(f"- {item}" for item in available_ranges)}
+- Prefer lower ranges for local fixes, small validations, text/config changes, single-screen defects, and isolated bug fixes.
+- Use 9-15h when the issue implies investigation plus implementation, multi-step debugging, or more than one technical surface.
+- Use 15-24h when the issue implies investigation plus correction plus validation across more than one subsystem, integration path, environment, or operational surface.
+- Use 21h or above when the wording strongly suggests aggregate scope, likely split, multiple deliverables, or broad technical coordination.
+- Do not compress everything into 6-12h by default.
+- Do not inflate the range only because the issue looks risky, vague, or mentions an exception.
+- Use uncertainty to reduce confidence first. Only move the range up if the text clearly indicates broader work.
+- If the issue sounds large, prefer expressing that through the range rather than a generic warning.
 
-SYSTEM_ROLE_SCOPE = (
-    "Você é um analista de software sênior especializado em estimativa heurística por escopo funcional, "
-    "com foco em tarefas ágeis pequenas, refinadas e previsíveis."
-)
+Primary focus for this mode:
+{guidance["role"]}
 
-INSTRUCTION_SCOPE = f"""
-Você recebeu o CONTEXTO COMPLETO de uma issue de software.
+What to analyze:
+{chr(10).join(f"- {item}" for item in guidance["focus"])}
 
-Seu papel é estimar o esforço com foco principal em ESCOPO FUNCIONAL.
-
-{BASELINE_REFERENCE}
-
-{SIZE_GUIDE}
-
-====================
-O QUE ANALISAR
-====================
-
-Avalie principalmente:
-- quantidade de entregáveis implícitos
-- quantidade de requisitos ou regras mencionadas
-- número de ações diferentes dentro da mesma issue
-- quantidade de áreas, módulos ou partes do sistema afetadas
-- se a issue parece uma entrega única ou várias entregas agrupadas
-
-====================
-CLASSIFICAÇÃO DE TAMANHO
-====================
-
-Classifique a issue em:
-XS | S | M | L | XL | XXL
-
-Escolha o size com base no tamanho funcional percebido, e não no medo de risco.
-
-====================
-CÁLCULO
-====================
-
-estimated_hours = baseline(size) × scale_factor
-
-Para esse modo:
-- scale_factor típico entre 1.00 e 1.35
-- use valores perto de 1.0 quando o texto for objetivo
-- só use fator alto se houver claro acúmulo de escopo funcional
-- se houver mais de um entregável relevante, evite classificar abaixo de M
-- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
-
-====================
-EXCEÇÃO > 40H
-====================
-
-Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
-- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
-- mas apenas com evidência textual forte de escopo excessivo
-- a justification DEVE dizer explicitamente que a demanda está acima do limite recomendado
-- e DEVE orientar quebrar/refinar em múltiplas issues menores
-
-====================
-SAÍDA
-====================
-
-Retorne APENAS um JSON válido:
+Return JSON only:
 {{
-  "mode": "scope",
-  "size": "XS|S|M|L|XL|XXL",
-  "scale_factor": float,
-  "estimated_hours": float,
-  "confidence": float,
-  "justification": "curta e objetiva"
+  "mode": "{mode}",
+  "range_index": 1,
+  "range_label": "1-3h|3-6h|6-9h|9-12h|12-15h|15-18h|18-21h|21-24h|24-27h|27-30h|30-33h|33-36h|36-40h",
+  "confidence": 0.0,
+  "justification": "short objective text",
+  "evidence": ["short list"],
+  "warnings": ["short list"],
+  "assumptions": ["short list"]
 }}
 
-Não inclua texto fora do JSON.
+Issue:
+{json.dumps(issue_context, ensure_ascii=False, indent=2)}
 """
-
-SYSTEM_ROLE_COMPLEXITY = (
-    "Você é um analista de software sênior especializado em estimativa heurística por complexidade técnica."
-)
-
-INSTRUCTION_COMPLEXITY = f"""
-Você recebeu o CONTEXTO COMPLETO de uma issue de software.
-
-Seu papel é estimar o esforço com foco principal em COMPLEXIDADE TÉCNICA.
-
-{BASELINE_REFERENCE}
-
-{SIZE_GUIDE}
-
-====================
-O QUE ANALISAR
-====================
-
-Avalie principalmente:
-- dificuldade técnica da implementação
-- integrações
-- regras de negócio complexas
-- impacto arquitetural
-- necessidade de conhecimento especializado
-- acoplamento com legado
-
-====================
-CLASSIFICAÇÃO DE TAMANHO
-====================
-
-Classifique a issue em:
-XS | S | M | L | XL | XXL
-
-Escolha o size pelo porte técnico mais plausível da implementação.
-
-====================
-CÁLCULO
-====================
-
-estimated_hours = baseline(size) × scale_factor
-
-Para esse modo:
-- scale_factor típico entre 1.00 e 1.60
-- se houver integração, regra complexa ou legado, prefira scale_factor >= 1.20
-- não amplifique apenas porque a issue parece genérica ou mal escrita
-- se houver integração relevante ou impacto em múltiplos componentes, evite classificar abaixo de M
-- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
-
-====================
-EXCEÇÃO > 40H
-====================
-
-Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
-- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
-- mas somente se a complexidade técnica realmente sustentar isso
-- a justification DEVE informar que a issue ultrapassa o tamanho recomendado
-- e DEVE recomendar quebra/refinamento
-
-====================
-SAÍDA
-====================
-
-Retorne APENAS um JSON válido:
-{{
-  "mode": "complexity",
-  "size": "XS|S|M|L|XL|XXL",
-  "scale_factor": float,
-  "estimated_hours": float,
-  "confidence": float,
-  "justification": "curta e objetiva"
-}}
-
-Não inclua texto fora do JSON.
-"""
-
-SYSTEM_ROLE_UNCERTAINTY = (
-    "Você é um analista de software sênior especializado em estimativa heurística por risco e incerteza."
-)
-
-INSTRUCTION_UNCERTAINTY = f"""
-Você recebeu o CONTEXTO COMPLETO de uma issue de software.
-
-Seu papel é estimar o esforço com foco principal em RISCO E INCERTEZA.
-
-{BASELINE_REFERENCE}
-
-{SIZE_GUIDE}
-
-====================
-O QUE ANALISAR
-====================
-
-Avalie principalmente:
-- ambiguidade do texto
-- necessidade de investigação
-- dependências externas
-- dependência de terceiros
-- legado e chance de retrabalho
-- lacunas de definição
-- risco de descoberta durante a execução
-
-====================
-CLASSIFICAÇÃO DE TAMANHO
-====================
-
-Classifique a issue em:
-XS | S | M | L | XL | XXL
-
-Primeiro escolha um size plausível da entrega.
-Depois use o fator para refletir incerteza real.
-
-====================
-CÁLCULO
-====================
-
-estimated_hours = baseline(size) × scale_factor
-
-Para esse modo:
-- scale_factor típico entre 1.00 e 1.65
-- use fator alto apenas quando a incerteza estiver explicitamente sustentada pelo texto
-- não transforme ausência de detalhes em explosão automática de horas
-- uncertainty deve moderar a estimativa, não dominar sozinha
-- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
-
-====================
-EXCEÇÃO > 40H
-====================
-
-Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
-- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
-- mas apenas se os riscos e as incertezas realmente indicarem demanda grande
-- a justification DEVE declarar que a issue está acima do limite recomendado
-- e DEVE orientar quebrar/refinar
-
-====================
-SAÍDA
-====================
-
-Retorne APENAS um JSON válido:
-{{
-  "mode": "uncertainty",
-  "size": "XS|S|M|L|XL|XXL",
-  "scale_factor": float,
-  "estimated_hours": float,
-  "confidence": float,
-  "justification": "curta e objetiva"
-}}
-
-Não inclua texto fora do JSON.
-"""
-
-SYSTEM_ROLE_AGILE_FIT = (
-    "Você é um analista de software sênior especializado em granularidade ágil e decomposição de trabalho."
-)
-
-INSTRUCTION_AGILE_FIT = f"""
-Você recebeu o CONTEXTO COMPLETO de uma issue de software.
-
-Seu papel é estimar o esforço com foco principal em ADERÊNCIA À GRANULARIDADE ÁGIL.
-
-{BASELINE_REFERENCE}
-
-{SIZE_GUIDE}
-
-====================
-O QUE ANALISAR
-====================
-
-Avalie principalmente:
-- se a issue parece refinada
-- se a issue mistura descoberta + implementação + rollout
-- se há sinais de épico condensado
-- se a issue combina múltiplos objetivos
-- se há escopo excessivo para uma única entrega ágil
-- se a demanda deveria ser quebrada em mais de uma issue
-
-====================
-CLASSIFICAÇÃO DE TAMANHO
-====================
-
-Classifique a issue em:
-XS | S | M | L | XL | XXL
-
-Se a issue parecer saudável para o ágil, mantenha a classificação dentro do regime normal.
-Se parecer ampla demais, isso deve aparecer tanto no size quanto na justificativa.
-
-====================
-CÁLCULO
-====================
-
-estimated_hours = baseline(size) × scale_factor
-
-Para esse modo:
-- scale_factor típico entre 0.95 e 1.45
-- use fator menor quando a issue estiver bem refinada
-- use fator maior quando a issue acumular trabalho demais
-- se parecer épico condensado ou múltiplos objetivos, evite classificar abaixo de L
-- prefira manter a estimativa em até {AGILE_HOURS_LIMIT}h
-
-====================
-EXCEÇÃO > 40H
-====================
-
-Se concluir que a issue excede {AGILE_HOURS_LIMIT}h:
-- trate isso como exceção
-- você PODE retornar estimated_hours > {AGILE_HOURS_LIMIT}
-- a justification DEVE informar explicitamente que a demanda está grande demais para uma única issue
-- e DEVE recomendar quebrar/refinar em múltiplas issues
-
-====================
-SAÍDA
-====================
-
-Retorne APENAS um JSON válido:
-{{
-  "mode": "agile_fit",
-  "size": "XS|S|M|L|XL|XXL",
-  "scale_factor": float,
-  "estimated_hours": float,
-  "confidence": float,
-  "justification": "curta e objetiva"
-}}
-
-Não inclua texto fora do JSON.
-"""
-
-
-def _normalize_heuristic_output(parsed: Dict[str, Any], mode: str) -> Dict[str, Any]:
-    if "mode" not in parsed:
-        parsed["mode"] = mode
-
-    try:
-        estimated_hours = float(parsed.get("estimated_hours", DEFAULT_FALLBACK_HOURS))
-    except (TypeError, ValueError):
-        estimated_hours = float(DEFAULT_FALLBACK_HOURS)
-
-    try:
-        scale_factor = float(parsed.get("scale_factor", 1.0))
-    except (TypeError, ValueError):
-        scale_factor = 1.0
-
-    try:
-        confidence = float(parsed.get("confidence", 0.5))
-    except (TypeError, ValueError):
-        confidence = 0.5
-
-    size = str(parsed.get("size", "M")).strip().upper() or "M"
-    justification = str(parsed.get("justification", "")).strip()
-
-    allowed_sizes = {"XS", "S", "M", "L", "XL", "XXL"}
-    if size not in allowed_sizes:
-        size = "M"
-
-    if estimated_hours < 0:
-        estimated_hours = 0.0
-
-    if scale_factor < 0:
-        scale_factor = 0.0
-
-    confidence = max(0.0, min(1.0, confidence))
-
-    floor_hours = float(SIZE_FLOOR.get(size, 0))
-    if estimated_hours < floor_hours:
-        estimated_hours = floor_hours
-
-    if estimated_hours > AGILE_HOURS_LIMIT:
-        split_msg = (
-            f" Estimativa acima de {AGILE_HOURS_LIMIT}h; recomenda-se refinar e "
-            f"quebrar a demanda em múltiplas issues menores."
-        )
-        if split_msg.strip() not in justification:
-            justification = (justification + split_msg).strip()
-
-    if not justification:
-        justification = "Estimativa heurística gerada com base no contexto técnico da issue."
-
-    parsed["mode"] = mode
-    parsed["size"] = size
-    parsed["scale_factor"] = round(scale_factor, 2)
-    parsed["estimated_hours"] = round(estimated_hours, 2)
-    parsed["confidence"] = round(confidence, 2)
-    parsed["justification"] = justification
-    return parsed
+    return build_system_prompt(guidance["role"], instruction)
+
+
+def _normalize_bucket_payload(mode: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
+    raw_range_index = parsed.get("range_index")
+    raw_range_label = str(parsed.get("range_label") or "").strip().lower()
+    if raw_range_index in (None, "") and raw_range_label:
+        for idx in range(1, 14):
+            if raw_range_label == range_index_to_label(idx).lower():
+                raw_range_index = idx
+                break
+    if raw_range_index in (None, ""):
+        raw_rank = parsed.get("bucket_rank")
+        if raw_rank in (None, ""):
+            bucket_rank = bucket_to_rank(parsed.get("size_bucket"))
+        else:
+            bucket_rank = clamp_bucket_rank(raw_rank)
+        range_index = bucket_rank_to_default_range_index(bucket_rank)
+    else:
+        range_index = clamp_range_index(raw_range_index)
+    range_payload = range_index_to_payload(range_index)
+    bucket_rank = range_index_to_bucket_rank(range_index)
+    size_bucket = rank_to_bucket(bucket_rank)
+
+    return {
+        "mode": mode,
+        "size_bucket": size_bucket,
+        "bucket_rank": bucket_rank,
+        "estimated_hours": float(range_payload["display_hours"]),
+        "estimated_hours_raw": float(range_payload["display_hours"]),
+        "min_hours": float(range_payload["range_min_hours"]),
+        "max_hours": float(range_payload["range_max_hours"]),
+        "range_index": range_payload["range_index"],
+        "range_label": range_payload["range_label"],
+        "range_min_hours": range_payload["range_min_hours"],
+        "range_max_hours": range_payload["range_max_hours"],
+        "display_hours": range_payload["display_hours"],
+        "confidence": max(0.05, min(0.95, float(parsed.get("confidence", 0.5) or 0.5))),
+        "justification": str(parsed.get("justification", "") or ""),
+        "evidence": list(parsed.get("evidence", []) or []),
+        "warnings": list(parsed.get("warnings", []) or []),
+        "assumptions": list(parsed.get("assumptions", []) or []),
+    }
+
+
+def _fallback(mode: str) -> Dict[str, Any]:
+    range_payload = range_index_to_payload(4)
+    return {
+        "mode": mode,
+        "size_bucket": rank_to_bucket(range_index_to_bucket_rank(range_payload["range_index"])),
+        "bucket_rank": range_index_to_bucket_rank(range_payload["range_index"]),
+        "estimated_hours": float(range_payload["display_hours"]),
+        "estimated_hours_raw": float(range_payload["display_hours"]),
+        "min_hours": float(range_payload["range_min_hours"]),
+        "max_hours": float(range_payload["range_max_hours"]),
+        "range_index": range_payload["range_index"],
+        "range_label": range_payload["range_label"],
+        "range_min_hours": range_payload["range_min_hours"],
+        "range_max_hours": range_payload["range_max_hours"],
+        "display_hours": range_payload["display_hours"],
+        "confidence": 0.25,
+        "justification": f"Fallback applied for heuristic mode {mode}.",
+        "evidence": [],
+        "warnings": ["Could not parse the model response."],
+        "assumptions": [],
+    }
 
 
 def run_heuristic(
     issue_context: Dict[str, Any],
     llm: LLMClient,
     temperature: float = 0.0,
-    mode: str = "complexity",
+    mode: str = "scope",
 ) -> Dict[str, Any]:
-    print(f"[IA][HEURISTIC][{mode}] inicio issue={issue_context.get('issue_number')}")
-
-    if mode == "scope":
-        system_role = SYSTEM_ROLE_SCOPE
-        instruction = INSTRUCTION_SCOPE
-    elif mode == "complexity":
-        system_role = SYSTEM_ROLE_COMPLEXITY
-        instruction = INSTRUCTION_COMPLEXITY
-    elif mode == "uncertainty":
-        system_role = SYSTEM_ROLE_UNCERTAINTY
-        instruction = INSTRUCTION_UNCERTAINTY
-    elif mode == "agile_fit":
-        system_role = SYSTEM_ROLE_AGILE_FIT
-        instruction = INSTRUCTION_AGILE_FIT
-    else:
-        raise ValueError(f"Modo heurístico inválido: {mode}")
-
-    system_prompt = build_system_prompt(system_role, instruction)
-    issue_text = json.dumps(issue_context, indent=2, ensure_ascii=False)
-
-    prompt = (
-        system_prompt
-        + "\n\n=== CONTEXTO DA ISSUE ===\n"
-        + issue_text
-    )
-
-    response = llm.send_prompt(
-        prompt,
-        temperature=float(temperature),
-        max_tokens=420,
-    )
-
-    token_usage = coerce_token_usage(getattr(llm, "last_token_usage", None))
+    if mode not in MODE_GUIDANCE:
+        raise ValueError(f"Unsupported heuristic mode: {mode}")
 
     try:
-        parsed = parse_llm_json_response(response)
-        print(f"[IA][HEURISTIC][{mode}] retorno:", parsed)
-
-        if not isinstance(parsed, dict):
-            raise ValueError("Resposta do modelo não é um JSON objeto.")
-
-        parsed = _normalize_heuristic_output(parsed, mode)
-        parsed["token_usage"] = token_usage
-        return parsed
-
-    except Exception as e:
-        print(f"[IA][HEURISTIC][{mode}] erro parse: {e}")
-        return {
-            "mode": mode,
-            "size": "M",
-            "scale_factor": 1.0,
-            "estimated_hours": DEFAULT_FALLBACK_HOURS,
-            "confidence": 0.3,
-            "justification": "Falha ao interpretar resposta do modelo; valor padrão aplicado.",
-            "error": str(e),
-            "raw_response": response,
-            "token_usage": token_usage,
-        }
+        prompt = _build_prompt(issue_context, mode)
+        raw = llm.send_prompt(prompt, temperature=temperature)
+        parsed = parse_llm_json_response(raw)
+        normalized = _normalize_bucket_payload(mode, parsed)
+        normalized["source"] = mode
+        normalized["token_usage"] = coerce_token_usage(llm.get_last_token_usage())
+        return normalized
+    except Exception as exc:
+        data = _fallback(mode)
+        data["warnings"].append(str(exc))
+        data["source"] = mode
+        data["token_usage"] = coerce_token_usage(llm.get_last_token_usage())
+        return data

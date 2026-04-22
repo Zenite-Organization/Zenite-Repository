@@ -4,9 +4,7 @@ from typing import Any, Dict
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
 from clients.github.github_provider import GitHubProjectProvider
 from domain.webhook_rules import ESTIMATION_LABEL
-
 from application.services.estimation_service import EstimationService
-
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +22,32 @@ class RunIssueEstimationUseCase:
         estimation_state = await self.estimation_service.run(dto)
         estimation = estimation_state.get("final_estimation", {})
 
-        estimate_value = estimation.get("estimated_hours", 0)
-        confidence = estimation.get("confidence", 0)
-        justification = estimation.get("justification", "")
+        estimate_value = float(estimation.get("estimated_hours", 0) or 0)
+        confidence = float(estimation.get("confidence", 0) or 0)
+        min_hours = estimation.get("min_hours")
+        max_hours = estimation.get("max_hours")
+        model_name = estimation.get("estimation_model", "unknown")
+        justification = (
+            estimation.get("user_justification")
+            or estimation.get("justification", "")
+        )
+        should_split = bool(estimation.get("should_split", False))
+        split_reason = estimation.get("split_reason")
+
+        interval_text = ""
+        if min_hours is not None and max_hours is not None:
+            interval_text = f"Intervalo sugerido: **{min_hours}h a {max_hours}h**.\n\n"
+
+        split_text = ""
+        if should_split:
+            split_text = f"⚠️ A issue aparenta precisar de quebra/refinamento. {split_reason or ''}\n\n"
 
         estimation_text = (
             f"Estimativa automática: **{estimate_value} horas**.\n\n"
-            f"Confiança: {confidence}\n\n"
+            f"{interval_text}"
+            f"Confiança: **{confidence:.2f}**\n\n"
+            f"Modelo: `{model_name}`\n\n"
+            f"{split_text}"
             f"Justificativa: {justification}"
         )
 

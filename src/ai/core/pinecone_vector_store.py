@@ -152,11 +152,10 @@ class PineconeVectorStoreClient(VectorStoreClient):
                             "metadata": getattr(match, "metadata", {}) or {},
                         }
                     record["namespace"] = namespace
-                    print(record)
+                    logger.debug("[RAG][Pinecone] match namespace=%s record=%s", namespace, record)
                     all_matches.append(record)
             except Exception as exc:
                 logger.exception("Pinecone query failed for namespace=%s: %s", namespace, exc)
-                print(f"[RAG][Pinecone] erro no namespace={namespace}: {exc}")
 
         return all_matches
 
