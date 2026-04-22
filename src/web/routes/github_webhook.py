@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -32,14 +33,23 @@ rate_limiter = InMemoryDailyRateLimiter(
 
 
 @router.post("/webhook/github")
+@router.post("/webhook/github/")
 async def handle_github_issues(
     request: Request,
-    x_github_event: str = Header(...),
-    x_github_delivery: str = Header(...),
+    x_github_event: str = Header(..., alias="X-GitHub-Event"),
+    x_github_delivery: str = Header(..., alias="X-GitHub-Delivery"),
     x_hub_signature_256: str | None = Header(None, alias="X-Hub-Signature-256"),
 ):
     body_bytes = await request.body()
-    verify_signature(body_bytes, x_hub_signature_256)
+    try:
+        verify_signature(body_bytes, x_hub_signature_256)
+    except HTTPException:
+        logger.warning(
+            "Webhook signature verification failed delivery_id=%s event=%s",
+            x_github_delivery,
+            x_github_event,
+        )
+        raise
 
     state, cached = await idempotency.reserve(x_github_delivery)
     if state == "done" and cached is not None:
@@ -93,6 +103,12 @@ async def handle_github_issues(
             return response
     except Exception as e:
         await idempotency.release(x_github_delivery)
+        logger.info(
+            "Invalid webhook payload delivery_id=%s event=%s error=%s",
+            x_github_delivery,
+            x_github_event,
+            str(e),
+        )
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
 
     installation_id = payload.installation.id
@@ -143,14 +159,36 @@ async def handle_github_issues(
         return response
 
     try:
-        result = await use_case.handle(
-            payload=payload,
-            event=x_github_event,
-            delivery_id=x_github_delivery,
+        async def _process_in_background() -> None:
+            try:
+                result = await use_case.handle(
+                    payload=payload,
+                    event=x_github_event,
+                    delivery_id=x_github_delivery,
+                )
+                await idempotency.mark_done(x_github_delivery, result.to_dict())
+            except Exception:
+                await idempotency.release(x_github_delivery)
+                logger.exception(
+                    "Background webhook processing failed delivery_id=%s event=%s",
+                    x_github_delivery,
+                    x_github_event,
+                )
+
+        # GitHub may treat long-running webhook handlers as failed deliveries.
+        # Always acknowledge quickly and process the heavy work asynchronously.
+        asyncio.create_task(_process_in_background())
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "event": x_github_event,
+                "action": payload.action,
+                "flow": flow.value,
+                "details": {"reason": "async_processing", "delivery_id": x_github_delivery},
+            },
         )
-        response = result.to_dict()
-        await idempotency.mark_done(x_github_delivery, response)
-        return response
     except Exception as e:
         await idempotency.release(x_github_delivery)
         logger.exception(
