@@ -4,10 +4,26 @@ import uuid
 import time
 import asyncio
 import json
+import re
 from collections import Counter
 from typing import Optional, Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import (
+    create_engine,
+    text,
+    MetaData,
+    Table,
+    Column,
+    String,
+    Text as SA_TEXT,
+    Float,
+    Integer,
+    SmallInteger,
+    Numeric,
+    func,
+    bindparam,
+)
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 # Run from repo root:
 # python scripts/validation.py
@@ -277,17 +293,19 @@ def ensure_validation_diagnostic_columns(engine, table_name: str) -> set[str]:
 
     if not missing:
         return existing
-
     try:
+        metadata = MetaData()
+        table = Table(table_name, metadata, autoload_with=engine)
         with engine.begin() as conn:
             for column_name in missing:
                 ddl = VALIDATION_DIAGNOSTIC_COLUMNS[column_name]
-                conn.execute(
-                    text(
-                        f"ALTER TABLE `{table_name}` "
-                        f"ADD COLUMN `{column_name}` {ddl}"
+                col = _ddl_to_column(column_name, ddl)
+                try:
+                    col.create(table, conn)
+                except Exception as exc:
+                    print(
+                        f"[WARN] Nao foi possivel criar coluna {column_name} em {table_name}: {exc}"
                     )
-                )
         print(
             "[INFO] Colunas diagnosticas adicionadas em "
             f"{table_name}: {', '.join(missing)}"
@@ -301,37 +319,34 @@ def ensure_validation_diagnostic_columns(engine, table_name: str) -> set[str]:
     return fetch_table_columns(engine, table_name)
 
 
-def build_upsert_sql(available_columns: set[str], table_name: str = VALIDATION_TABLE):
+def build_upsert_sql(available_columns: set[str], table_name: str = VALIDATION_TABLE, engine=None):
+    if engine is None:
+        raise RuntimeError("engine is required to build upsert statement")
+
     optional_columns = [
         column_name
         for column_name in VALIDATION_DIAGNOSTIC_COLUMNS
         if column_name in available_columns
     ]
     insert_columns = VALIDATION_BASE_COLUMNS + optional_columns
-    update_columns = [
-        column_name
-        for column_name in insert_columns
-        if column_name not in VALIDATION_KEY_COLUMNS
-    ]
 
-    insert_cols_sql = ", ".join(f"`{column_name}`" for column_name in insert_columns)
-    insert_values_sql = ", ".join(f":{column_name}" for column_name in insert_columns)
-    update_sql = ",\n          ".join(
-        f"`{column_name}` = VALUES(`{column_name}`)"
-        for column_name in update_columns
-    )
+    metadata = MetaData()
+    table = Table(table_name, metadata, autoload_with=engine)
 
-    return text(
-        f"""
-        INSERT INTO `{table_name}`
-          ({insert_cols_sql}, `predicted_at`)
-        VALUES
-          ({insert_values_sql}, NOW())
-        ON DUPLICATE KEY UPDATE
-          {update_sql},
-          `predicted_at` = NOW()
-        """
-    )
+    stmt = mysql_insert(table).values({col: bindparam(col) for col in insert_columns})
+
+    update_dict = {
+        col: stmt.inserted[col]
+        for col in insert_columns
+        if col not in VALIDATION_KEY_COLUMNS
+    }
+
+    # ensure predicted_at is updated
+    update_dict["predicted_at"] = func.now()
+
+    stmt = stmt.on_duplicate_key_update(**update_dict)
+
+    return stmt
 
 
 def _candidate_map(candidates: list[dict]) -> dict[str, dict]:
@@ -694,7 +709,7 @@ async def main():
 
     svc = EstimationService()
     available_columns = ensure_validation_diagnostic_columns(engine, VALIDATION_TABLE)
-    upsert_sql = build_upsert_sql(available_columns, VALIDATION_TABLE)
+    upsert_sql = build_upsert_sql(available_columns, VALIDATION_TABLE, engine)
     active_diagnostic_columns = [
         column_name
         for column_name in VALIDATION_DIAGNOSTIC_COLUMNS
