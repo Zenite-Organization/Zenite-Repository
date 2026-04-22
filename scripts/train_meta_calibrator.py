@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, MetaData, Table, select, func
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -72,77 +72,64 @@ def fetch_training_rows(engine) -> list[dict[str, Any]]:
     min_hours = float(os.getenv("TRAIN_MIN_ACTUAL_HOURS", "1") or 1)
     max_hours = float(os.getenv("TRAIN_MAX_ACTUAL_HOURS", "40") or 40)
 
-    filters = [
-        "v.base_hours IS NOT NULL",
-        "v.predicted_hours IS NOT NULL",
-        "x.total_effort_minutes IS NOT NULL",
-        "(x.total_effort_minutes / 60.0) BETWEEN :min_hours AND :max_hours",
+    # Build a safe SQLAlchemy Core select to avoid raw text SQL construction
+    metadata = MetaData()
+    v = Table("issue_estimation_validation", metadata, autoload_with=engine)
+    x = Table("issue", metadata, autoload_with=engine)
+
+    stmt = select(
+        v.c.issue_id,
+        v.c.validation_run_id,
+        v.c.predicted_at,
+        v.c.project_key,
+        func.lower(func.coalesce(func.nullif(x.c.type, ""), "unknown")).label("issue_type"),
+        v.c.selected_model,
+        v.c.finalization_mode,
+        v.c.retrieval_route,
+        v.c.calibration_source,
+        v.c.size_bucket,
+        v.c.bucket_rank,
+        v.c.heuristic_size_bucket,
+        v.c.heuristic_bucket_rank,
+        v.c.analogical_bucket_rank,
+        v.c.base_hours,
+        v.c.adjusted_hours,
+        v.c.predicted_hours,
+        v.c.analogical_hours,
+        v.c.analogical_confidence,
+        v.c.heuristic_scope_hours,
+        v.c.heuristic_scope_confidence,
+        v.c.confidence,
+        v.c.top1_score,
+        v.c.top3_avg_score,
+        v.c.useful_count,
+        v.c.hours_spread,
+        v.c.rag_context_sufficient,
+        v.c.complexity_bucket_delta,
+        v.c.agile_guard_bucket_delta,
+        func.round(x.c.total_effort_minutes / 60.0, 4).label("actual_hours"),
+    ).select_from(v.join(x, x.c.id == v.c.issue_id))
+
+    conditions = [
+        v.c.base_hours.isnot(None),
+        v.c.predicted_hours.isnot(None),
+        x.c.total_effort_minutes.isnot(None),
+        (x.c.total_effort_minutes / 60.0).between(min_hours, max_hours),
     ]
-    params: dict[str, Any] = {"min_hours": min_hours, "max_hours": max_hours}
 
     if run_ids:
-        placeholders = []
-        for idx, run_id in enumerate(run_ids):
-            key = f"run_id_{idx}"
-            placeholders.append(f":{key}")
-            params[key] = run_id
-        filters.append(f"v.validation_run_id IN ({', '.join(placeholders)})")
+        conditions.append(v.c.validation_run_id.in_(run_ids))
 
     if project_keys:
-        placeholders = []
-        for idx, project_key in enumerate(project_keys):
-            key = f"project_key_{idx}"
-            placeholders.append(f":{key}")
-            params[key] = project_key
-        filters.append(f"LOWER(v.project_key) IN ({', '.join(placeholders)})")
+        conditions.append(func.lower(v.c.project_key).in_(project_keys))
 
     if predicted_at_from:
-        filters.append("v.predicted_at >= :predicted_at_from")
-        params["predicted_at_from"] = predicted_at_from
+        conditions.append(v.c.predicted_at >= predicted_at_from)
 
-    sql = text(
-        f"""
-        SELECT
-          v.issue_id,
-          v.validation_run_id,
-          v.predicted_at,
-          v.project_key,
-          LOWER(COALESCE(NULLIF(x.type, ''), 'unknown')) AS issue_type,
-          v.selected_model,
-          v.finalization_mode,
-          v.retrieval_route,
-          v.calibration_source,
-          v.size_bucket,
-          v.bucket_rank,
-          v.heuristic_size_bucket,
-          v.heuristic_bucket_rank,
-          v.analogical_bucket_rank,
-          v.base_hours,
-          v.adjusted_hours,
-          v.predicted_hours,
-          v.analogical_hours,
-          v.analogical_confidence,
-          v.heuristic_scope_hours,
-          v.heuristic_scope_confidence,
-          v.confidence,
-          v.top1_score,
-          v.top3_avg_score,
-          v.useful_count,
-          v.hours_spread,
-          v.rag_context_sufficient,
-          v.complexity_bucket_delta,
-          v.agile_guard_bucket_delta,
-          ROUND((x.total_effort_minutes / 60.0), 4) AS actual_hours
-        FROM issue_estimation_validation v
-        JOIN issue x
-          ON x.id = v.issue_id
-        WHERE {' AND '.join(filters)}
-        ORDER BY v.predicted_at ASC, v.issue_id ASC
-        """
-    )
+    stmt = stmt.where(*conditions).order_by(v.c.predicted_at.asc(), v.c.issue_id.asc())
 
     with engine.connect() as conn:
-        rows = conn.execute(sql, params).mappings().all()
+        rows = conn.execute(stmt).mappings().all()
         normalized = [dict(row) for row in rows]
         fetch_training_rows.last_raw_count = len(normalized)  # type: ignore[attr-defined]
         if latest_per_issue:
