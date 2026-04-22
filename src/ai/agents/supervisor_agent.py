@@ -63,15 +63,21 @@ def _build_justification(
     finalization_mode = str(calibrated_estimation.get("finalization_mode") or "calibrated")
     route = str(calibrated_estimation.get("retrieval_route") or "unknown")
     size_bucket = str(calibrated_estimation.get("size_bucket") or "M")
+    range_label = str(calibrated_estimation.get("range_label") or "")
     calibration_source = str(calibrated_estimation.get("calibration_source") or "unknown")
     adjustment_delta = _safe_float(calibrated_estimation.get("adjustment_delta"), 0.0)
+    meta_applied = bool(calibrated_estimation.get("meta_applied"))
+    meta_source = str(calibrated_estimation.get("meta_source") or "").strip()
 
     parts = [
         f"Finalized via {finalization_mode}",
         f"size bucket {size_bucket}",
+        f"final range {range_label}" if range_label else "final range unknown",
         f"calibrated from {calibration_source}",
         f"retrieval route {route}",
     ]
+    if meta_applied and meta_source:
+        parts.append(f"meta-calibrated with {meta_source}")
     if analogical and analogical.get("estimated_hours") is not None:
         parts.append(f"analogical base {_safe_float(analogical.get('estimated_hours')):.1f}h")
     if adjustment_delta > 0.2:
@@ -83,6 +89,69 @@ def _build_justification(
     elif (complexity_review or {}).get("should_split"):
         parts.append("technical review recommends split")
     return "; ".join(parts) + "."
+
+
+def _confidence_label(confidence: float) -> str:
+    if confidence >= 0.78:
+        return "alta"
+    if confidence >= 0.58:
+        return "moderada"
+    return "baixa"
+
+
+def _build_user_justification(
+    calibrated_estimation: Dict[str, Any],
+    analogical: Optional[Dict[str, Any]],
+    complexity_review: Optional[Dict[str, Any]],
+    agile_guard_review: Optional[Dict[str, Any]],
+) -> str:
+    range_label = str(calibrated_estimation.get("range_label") or "")
+    size_bucket = str(calibrated_estimation.get("size_bucket") or "M")
+    route = str(calibrated_estimation.get("retrieval_route") or "")
+    confidence = _safe_float(calibrated_estimation.get("base_confidence"), 0.55)
+    adjustment_delta = _safe_float(calibrated_estimation.get("adjustment_delta"), 0.0)
+    should_split = bool(calibrated_estimation.get("should_split"))
+    fit_status = str((agile_guard_review or {}).get("fit_status") or "").strip().lower()
+    complexity_risk = _safe_float((complexity_review or {}).get("risk_hidden_complexity"), 0.0)
+
+    opening = (
+        f"A estimativa ficou na faixa de {range_label}"
+        if range_label
+        else "A estimativa ficou em uma faixa intermediária"
+    )
+
+    if size_bucket in {"XS", "S"}:
+        scope_text = "porque o trabalho parece mais localizado e com menor impacto no restante do sistema"
+    elif size_bucket in {"XL", "XXL"}:
+        scope_text = "porque há sinais de impacto amplo, com mais etapas de trabalho e maior coordenação técnica"
+    elif size_bucket == "L":
+        scope_text = "porque a issue sugere um esforço acima da média, com mais de uma etapa relevante de implementação e validação"
+    else:
+        scope_text = "porque a issue sugere um esforço intermediário, combinando implementação e validação sem indicar uma mudança muito ampla"
+
+    if route == "analogical_primary":
+        history_text = "Também encontramos itens bem parecidos no histórico, o que reforçou essa decisão."
+    elif route in {"analogical_support", "analogical_soft_signal"}:
+        history_text = "O histórico trouxe alguns itens parecidos, que ajudaram a calibrar a faixa final."
+    else:
+        history_text = "Como o histórico parecido foi fraco, demos mais peso ao escopo descrito na própria issue."
+
+    adjustments: List[str] = []
+    if adjustment_delta > 0.2:
+        adjustments.append("A faixa foi puxada um pouco para cima por sinais de complexidade adicional.")
+    elif adjustment_delta < -0.2:
+        adjustments.append("A faixa foi mantida mais enxuta porque o trabalho parece mais isolado do que um caso amplo.")
+
+    if fit_status == "oversized" or should_split:
+        adjustments.append("Há sinais de que a issue pode estar agrupando trabalho demais e talvez precise ser quebrada.")
+    elif fit_status == "borderline":
+        adjustments.append("A issue parece estar perto do limite de um item saudável de backlog, então vale atenção no refinamento.")
+
+    if complexity_risk >= 0.8:
+        adjustments.append("Também apareceram sinais de complexidade oculta que podem exigir investigação e validação adicionais.")
+
+    confidence_text = f"A confiança nessa leitura é {_confidence_label(confidence)}."
+    return " ".join([opening, scope_text + ".", history_text, *adjustments, confidence_text]).strip()
 
 
 def combine_multi_agent_estimations(
@@ -97,17 +166,21 @@ def combine_multi_agent_estimations(
     llm: Any = None,
 ) -> Dict[str, Any]:
     calibrated = dict(calibrated_estimation or {})
-    estimated_hours = _safe_float(
+    estimated_hours_raw = _safe_float(
         calibrated.get("adjusted_hours", calibrated.get("base_hours")),
         8.0,
     )
-    min_hours = _safe_float(calibrated.get("min_hours"), max(1.0, estimated_hours * 0.8))
-    max_hours = _safe_float(calibrated.get("max_hours"), max(estimated_hours, estimated_hours * 1.2))
+    estimated_hours = _safe_float(
+        calibrated.get("display_hours"),
+        estimated_hours_raw,
+    )
+    min_hours = _safe_float(calibrated.get("range_min_hours"), _safe_float(calibrated.get("min_hours"), max(1.0, estimated_hours_raw * 0.8)))
+    max_hours = _safe_float(calibrated.get("range_max_hours"), _safe_float(calibrated.get("max_hours"), max(estimated_hours_raw, estimated_hours_raw * 1.2)))
     should_split = (
         bool(calibrated.get("should_split"))
         or bool((agile_guard_review or {}).get("should_split"))
         or bool((complexity_review or {}).get("should_split"))
-        or estimated_hours > AGILE_HOURS_LIMIT
+        or estimated_hours_raw > AGILE_HOURS_LIMIT
     )
     split_reason = (
         calibrated.get("split_reason")
@@ -117,17 +190,28 @@ def combine_multi_agent_estimations(
     if should_split and not split_reason:
         split_reason = f"Consolidated estimate exceeds the healthy agile limit of {AGILE_HOURS_LIMIT:.0f}h."
 
+    analysis_justification = _build_justification(
+        calibrated_estimation=calibrated,
+        analogical=analogical,
+        complexity_review=complexity_review,
+        agile_guard_review=agile_guard_review,
+    )
+    user_justification = _build_user_justification(
+        calibrated_estimation=calibrated,
+        analogical=analogical,
+        complexity_review=complexity_review,
+        agile_guard_review=agile_guard_review,
+    )
+
     out = {
-        "estimated_hours": round(max(1.0, estimated_hours), 1),
-        "min_hours": round(max(1.0, min(min_hours, estimated_hours)), 1),
-        "max_hours": round(max(max_hours, estimated_hours), 1),
+        "estimated_hours": int(max(1, round(estimated_hours))),
+        "estimated_hours_raw": round(max(1.0, estimated_hours_raw), 1),
+        "min_hours": int(max(1, round(min_hours))),
+        "max_hours": int(max(round(max_hours), round(min_hours))),
         "confidence": _review_confidence(calibrated, critic_review, heuristic_candidates),
-        "justification": _build_justification(
-            calibrated_estimation=calibrated,
-            analogical=analogical,
-            complexity_review=complexity_review,
-            agile_guard_review=agile_guard_review,
-        ),
+        "justification": user_justification,
+        "user_justification": user_justification,
+        "analysis_justification": analysis_justification,
         "evidence": _collect_text_list(
             (analogical or {}).get("evidence"),
             calibrated.get("evidence"),
@@ -153,9 +237,24 @@ def combine_multi_agent_estimations(
         "calibration_source": calibrated.get("calibration_source"),
         "size_bucket": calibrated.get("size_bucket"),
         "bucket_rank": calibrated.get("bucket_rank"),
+        "range_index": calibrated.get("range_index"),
+        "range_label": calibrated.get("range_label"),
+        "range_min_hours": calibrated.get("range_min_hours"),
+        "range_max_hours": calibrated.get("range_max_hours"),
+        "display_hours": calibrated.get("display_hours"),
         "base_hours": calibrated.get("base_hours"),
         "adjusted_hours": calibrated.get("adjusted_hours", calibrated.get("base_hours")),
         "adjustment_delta": calibrated.get("adjustment_delta"),
+        "meta_applied": calibrated.get("meta_applied"),
+        "meta_hours": calibrated.get("meta_hours"),
+        "meta_min_hours": calibrated.get("meta_min_hours"),
+        "meta_max_hours": calibrated.get("meta_max_hours"),
+        "meta_confidence": calibrated.get("meta_confidence"),
+        "meta_source": calibrated.get("meta_source"),
+        "meta_prior_source": calibrated.get("meta_prior_source"),
+        "meta_prior_count": calibrated.get("meta_prior_count"),
+        "meta_blend_weight": calibrated.get("meta_blend_weight"),
+        "meta_model_version": calibrated.get("meta_model_version"),
         "retrieval_route": calibrated.get("retrieval_route") or (analogical or {}).get("retrieval_route"),
         "retrieval_stats": calibrated.get("retrieval_stats") or (analogical or {}).get("retrieval_stats") or {},
         "agent_trace": {

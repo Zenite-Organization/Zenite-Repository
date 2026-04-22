@@ -1,7 +1,16 @@
 from typing import Any, Dict
 import json
 
-from ai.core.effort_calibration import bucket_to_rank, clamp_bucket_rank, rank_to_bucket
+from ai.core.effort_calibration import (
+    bucket_rank_to_default_range_index,
+    bucket_to_rank,
+    clamp_bucket_rank,
+    clamp_range_index,
+    range_index_to_bucket_rank,
+    range_index_to_label,
+    range_index_to_payload,
+    rank_to_bucket,
+)
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
@@ -50,20 +59,37 @@ MODE_GUIDANCE = {
 
 def _build_prompt(issue_context: Dict[str, Any], mode: str) -> str:
     guidance = MODE_GUIDANCE[mode]
+    available_ranges = [
+        "1=1-3h",
+        "2=3-6h",
+        "3=6-9h",
+        "4=9-12h",
+        "5=12-15h",
+        "6=15-18h",
+        "7=18-21h",
+        "8=21-24h",
+        "9=24-27h",
+        "10=27-30h",
+        "11=30-33h",
+        "12=33-36h",
+        "13=36-40h",
+    ]
     instruction = f"""
 You received the full context of a software issue.
 
-Your task is to estimate only the relative size bucket, not direct hours.
+Your task is to estimate the most plausible effort range, not an exact number of hours.
 
 Rules:
-- Work with ordinal effort buckets only: XS, S, M, L, XL, XXL.
-- Treat these buckets as relative project size classes, not as a fixed hour table.
-- Prefer XS/S for local fixes, small validations, text/config changes, single-screen defects, and isolated bug fixes.
-- Use M when the issue implies investigation plus implementation, multi-step debugging, SDK/runtime/version compatibility work, CI/CD or certificate remediation, or more than one technical surface.
-- Use L or above only when the text strongly suggests broader multi-component change, cross-cutting refactor, or aggregate scope.
-- Do not inflate the bucket only because the issue looks risky, vague, or mentions an exception.
-- Use uncertainty to reduce confidence first. Only move the bucket up if the text clearly indicates broader work.
-- Do not default to S when the issue clearly requires both root-cause analysis and a concrete fix.
+- Choose one ordinal range only from this catalog:
+{chr(10).join(f"- {item}" for item in available_ranges)}
+- Prefer lower ranges for local fixes, small validations, text/config changes, single-screen defects, and isolated bug fixes.
+- Use 9-15h when the issue implies investigation plus implementation, multi-step debugging, or more than one technical surface.
+- Use 15-24h when the issue implies investigation plus correction plus validation across more than one subsystem, integration path, environment, or operational surface.
+- Use 21h or above when the wording strongly suggests aggregate scope, likely split, multiple deliverables, or broad technical coordination.
+- Do not compress everything into 6-12h by default.
+- Do not inflate the range only because the issue looks risky, vague, or mentions an exception.
+- Use uncertainty to reduce confidence first. Only move the range up if the text clearly indicates broader work.
+- If the issue sounds large, prefer expressing that through the range rather than a generic warning.
 
 Primary focus for this mode:
 {guidance["role"]}
@@ -74,8 +100,8 @@ What to analyze:
 Return JSON only:
 {{
   "mode": "{mode}",
-  "size_bucket": "XS|S|M|L|XL|XXL",
-  "bucket_rank": 1,
+  "range_index": 1,
+  "range_label": "1-3h|3-6h|6-9h|9-12h|12-15h|15-18h|18-21h|21-24h|24-27h|27-30h|30-33h|33-36h|36-40h",
   "confidence": 0.0,
   "justification": "short objective text",
   "evidence": ["short list"],
@@ -90,19 +116,39 @@ Issue:
 
 
 def _normalize_bucket_payload(mode: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
-    raw_rank = parsed.get("bucket_rank")
-    if raw_rank in (None, ""):
-        bucket_rank = bucket_to_rank(parsed.get("size_bucket"))
+    raw_range_index = parsed.get("range_index")
+    raw_range_label = str(parsed.get("range_label") or "").strip().lower()
+    if raw_range_index in (None, "") and raw_range_label:
+        for idx in range(1, 14):
+            if raw_range_label == range_index_to_label(idx).lower():
+                raw_range_index = idx
+                break
+    if raw_range_index in (None, ""):
+        raw_rank = parsed.get("bucket_rank")
+        if raw_rank in (None, ""):
+            bucket_rank = bucket_to_rank(parsed.get("size_bucket"))
+        else:
+            bucket_rank = clamp_bucket_rank(raw_rank)
+        range_index = bucket_rank_to_default_range_index(bucket_rank)
     else:
-        bucket_rank = clamp_bucket_rank(raw_rank)
-    size_bucket = str(parsed.get("size_bucket") or rank_to_bucket(bucket_rank)).strip().upper()
-    if size_bucket not in {"XS", "S", "M", "L", "XL", "XXL"}:
-        size_bucket = rank_to_bucket(bucket_rank)
+        range_index = clamp_range_index(raw_range_index)
+    range_payload = range_index_to_payload(range_index)
+    bucket_rank = range_index_to_bucket_rank(range_index)
+    size_bucket = rank_to_bucket(bucket_rank)
 
     return {
         "mode": mode,
         "size_bucket": size_bucket,
         "bucket_rank": bucket_rank,
+        "estimated_hours": float(range_payload["display_hours"]),
+        "estimated_hours_raw": float(range_payload["display_hours"]),
+        "min_hours": float(range_payload["range_min_hours"]),
+        "max_hours": float(range_payload["range_max_hours"]),
+        "range_index": range_payload["range_index"],
+        "range_label": range_payload["range_label"],
+        "range_min_hours": range_payload["range_min_hours"],
+        "range_max_hours": range_payload["range_max_hours"],
+        "display_hours": range_payload["display_hours"],
         "confidence": max(0.05, min(0.95, float(parsed.get("confidence", 0.5) or 0.5))),
         "justification": str(parsed.get("justification", "") or ""),
         "evidence": list(parsed.get("evidence", []) or []),
@@ -112,10 +158,20 @@ def _normalize_bucket_payload(mode: str, parsed: Dict[str, Any]) -> Dict[str, An
 
 
 def _fallback(mode: str) -> Dict[str, Any]:
+    range_payload = range_index_to_payload(4)
     return {
         "mode": mode,
-        "size_bucket": "M",
-        "bucket_rank": 3,
+        "size_bucket": rank_to_bucket(range_index_to_bucket_rank(range_payload["range_index"])),
+        "bucket_rank": range_index_to_bucket_rank(range_payload["range_index"]),
+        "estimated_hours": float(range_payload["display_hours"]),
+        "estimated_hours_raw": float(range_payload["display_hours"]),
+        "min_hours": float(range_payload["range_min_hours"]),
+        "max_hours": float(range_payload["range_max_hours"]),
+        "range_index": range_payload["range_index"],
+        "range_label": range_payload["range_label"],
+        "range_min_hours": range_payload["range_min_hours"],
+        "range_max_hours": range_payload["range_max_hours"],
+        "display_hours": range_payload["display_hours"],
         "confidence": 0.25,
         "justification": f"Fallback applied for heuristic mode {mode}.",
         "evidence": [],

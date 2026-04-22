@@ -9,7 +9,7 @@ from ai.core.rag_namespace_policy import (
     group_issue_namespaces,
 )
 from ai.core.rag_normalizer import normalize_match
-from ai.core.rag_ranker import join_issue_context
+from ai.core.rag_ranker import join_issue_context, rerank_issue_context
 
 
 logger = logging.getLogger(__name__)
@@ -114,12 +114,17 @@ class Retriever:
         target_size = settings.RAG_FINAL_CONTEXT_SIZE
         top_k = top_k or settings.RAG_TOPK_PER_NAMESPACE
         min_score = settings.RAG_MIN_SCORE_MAIN
-        max_fallback_bases = settings.RAG_MAX_FALLBACK_BASES
         primary_namespace = extract_project_issue_namespace(issue_payload.get("repository") or "")
-        namespace_order: List[str] = [primary_namespace] if primary_namespace else []
 
-        queried_namespaces: List[str] = []
-        fallback_namespaces_tried: List[str] = []
+        # [GLOBAL SEARCH] Sempre buscamos em todos os _issues namespaces disponíveis
+        # e ranqueamos globalmente por score. Isso elimina a dependência de ordem
+        # arbitrária do list_namespaces() e garante que o melhor match sempre
+        # vença, mesmo que esteja em um projeto diferente do atual.
+        #
+        # Custo: uma única chamada semantic_search com lista de namespaces. O
+        # embedding da query é feito uma só vez e reusado internamente. Pinecone
+        # cobra min 0.25 RU por namespace — para os 37 namespaces pequenos do
+        # Zenite isso é < 4% do custo total da estimativa (o LLM é ~99%).
         discovered_issue_namespaces: List[str] = []
         if hasattr(self.vs, "list_namespaces"):
             try:
@@ -127,81 +132,82 @@ class Retriever:
             except Exception:
                 discovered = []
             discovered_issue_namespaces = group_issue_namespaces(discovered)
-            for namespace in discovered_issue_namespaces:
-                if namespace == primary_namespace:
-                    continue
-                if len(fallback_namespaces_tried) >= max_fallback_bases:
-                    break
-                namespace_order.append(namespace)
-                fallback_namespaces_tried.append(namespace)
+
+        # Garante que o primário esteja na lista mesmo se list_namespaces falhar
+        namespaces_to_query: List[str] = list(discovered_issue_namespaces)
+        if primary_namespace and primary_namespace not in namespaces_to_query:
+            namespaces_to_query.insert(0, primary_namespace)
+
+        # Fallback: sem discovery, ao menos tenta o namespace primário
+        if not namespaces_to_query and primary_namespace:
+            namespaces_to_query = [primary_namespace]
+
+        if not namespaces_to_query:
+            logger.warning("[RAG] nenhum namespace disponível para busca")
+            return []
+
         logger.debug(
-            "[RAG] discovered_issue_namespaces=%s namespace_order=%s",
-            discovered_issue_namespaces,
-            namespace_order,
+            "[RAG] busca global — primary=%s total_namespaces=%d",
+            primary_namespace,
+            len(namespaces_to_query),
         )
-        all_raw_matches: List[Dict[str, Any]] = []
-        qualified_raw_matches: List[Dict[str, Any]] = []
-        seen_keys = set()
-        filtered_out_low_score_total = 0
-        stop_reason = "no_more_namespaces"
+
         where = self._pinecone_where_filter()
-
         embedding_tokens_total = 0
-        embedding_calls = 0
 
-        for namespace in namespace_order:
-            try:
-                raw = self.vs.semantic_search(
-                    query_text,
-                    namespaces=[namespace],
-                    top_k=top_k,
-                    where=where,
-                )
-            except TypeError:
-                # Backward-compatibility with test doubles / older interfaces.
-                raw = self.vs.semantic_search(
-                    query_text,
-                    namespaces=[namespace],
-                    top_k=top_k,
-                )
-            embedding_calls += 1
-            try:
-                embedding_tokens_total += int(getattr(self.vs, "last_embedding_tokens", 0) or 0)
-            except Exception:
-                pass
-            queried_namespaces.append(namespace)
-            all_raw_matches.extend(raw)
+        # Uma única chamada que consulta todos os namespaces. O Pinecone client
+        # itera internamente e reusa o embedding da query. Se o client não
+        # aceitar lista (mocks antigos), faz fallback para loop sequencial.
+        try:
+            raw_matches = self.vs.semantic_search(
+                query_text,
+                namespaces=namespaces_to_query,
+                top_k=top_k,
+                where=where,
+            )
+        except TypeError:
+            # Backward-compatibility com mocks/clients antigos que não aceitam
+            # `where` ou múltiplos namespaces de uma vez.
+            raw_matches = []
+            for ns in namespaces_to_query:
+                try:
+                    raw_matches.extend(
+                        self.vs.semantic_search(
+                            query_text,
+                            namespaces=[ns],
+                            top_k=top_k,
+                        )
+                    )
+                except Exception as exc:
+                    logger.exception("semantic_search fallback falhou para %s: %s", ns, exc)
 
-            filtered = self._filter_score_threshold(raw, min_score=min_score)
-            filtered_out_low_score_total += max(0, len(raw) - len(filtered))
-            filtered = self._filter_description_length(filtered)
-
-            for match in filtered:
-                key = self._dedupe_key(match)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                qualified_raw_matches.append(match)
-                if len(qualified_raw_matches) >= target_size:
-                    stop_reason = "filled_target"
-                    break
-
-            if len(qualified_raw_matches) >= target_size:
-                break
+        try:
+            embedding_tokens_total = int(getattr(self.vs, "last_embedding_tokens", 0) or 0)
+        except Exception:
+            embedding_tokens_total = 0
 
         self.last_rag_usage = {
             "embedding_tokens": max(0, int(embedding_tokens_total)),
-            "embedding_calls": max(0, int(embedding_calls)),
+            # Uma única chamada de embedding mesmo consultando N namespaces
+            "embedding_calls": 1 if raw_matches is not None else 0,
         }
 
-        if (
-            stop_reason != "filled_target"
-            and len(fallback_namespaces_tried) >= max_fallback_bases
-            and len(discovered_issue_namespaces)
-            > len(fallback_namespaces_tried) + (1 if primary_namespace else 0)
-        ):
-            stop_reason = "fallback_cap_reached"
+        # Filtros por score e descrição mínima
+        filtered = self._filter_score_threshold(raw_matches, min_score=min_score)
+        filtered_out_low_score_total = max(0, len(raw_matches) - len(filtered))
+        filtered = self._filter_description_length(filtered)
 
+        # Dedup preservando o maior score quando há duplicatas
+        seen_keys: Dict[str, Dict[str, Any]] = {}
+        for match in sorted(filtered, key=self._safe_score, reverse=True):
+            key = self._dedupe_key(match)
+            if key not in seen_keys:
+                seen_keys[key] = match
+        qualified_raw_matches = list(seen_keys.values())
+
+        # Ordena globalmente por score e trunca em target_size. Aqui está a
+        # diferença chave vs o comportamento antigo: o melhor match sempre
+        # vence, independentemente de qual namespace ele veio.
         qualified_raw_matches = sorted(
             qualified_raw_matches,
             key=self._safe_score,
@@ -209,25 +215,27 @@ class Retriever:
         )[:target_size]
 
         normalized = [normalize_match(match) for match in qualified_raw_matches]
+        normalized = rerank_issue_context(normalized, issue_payload)
         joined = join_issue_context(normalized)
         context = sorted(joined, key=lambda it: float(it.get("score") or 0.0), reverse=True)[
             :target_size
         ]
 
         mix = Counter(item.get("doc_type") for item in context)
+        namespaces_hit = Counter(item.get("namespace") for item in context)
         logger.info(
-            "[RAG] primary_namespace=%s target_size=%s qualified_collected=%s namespaces_queried=%s fallback_namespaces_tried=%s filtered_out_low_score_total=%s stop_reason=%s total_raw=%s final_context=%s best_score=%.4f mix=%s",
+            "[RAG] primary_namespace=%s total_namespaces=%d qualified_collected=%s "
+            "filtered_out_low_score_total=%s total_raw=%s final_context=%s "
+            "best_score=%.4f mix=%s namespaces_hit=%s",
             primary_namespace,
-            target_size,
+            len(namespaces_to_query),
             len(qualified_raw_matches),
-            queried_namespaces,
-            fallback_namespaces_tried,
             filtered_out_low_score_total,
-            stop_reason,
-            len(all_raw_matches),
+            len(raw_matches),
             len(context),
             self._best_score(qualified_raw_matches),
             dict(mix),
+            dict(namespaces_hit),
         )
 
         # Keep structure expected by prompt_utils/analogical agent.

@@ -6,13 +6,20 @@ from typing import TypedDict, Dict, Any, List, Optional
 from langgraph.graph import StateGraph, START, END
 
 from ai.core.effort_calibration import (
-    aggregate_bucket_consensus,
-    bounded_adjustment_from_reviews,
+    aggregate_range_consensus,
     build_calibration_profile,
-    calibrate_bucket_rank_to_hours,
+    bucket_rank_to_default_range_index,
     clamp_bucket_rank,
-    infer_bucket_rank_from_hours,
+    clamp_range_index,
+    hours_to_range_payload,
+    hours_to_range_index,
     rank_to_bucket,
+    range_index_to_bucket_rank,
+    range_index_to_payload,
+)
+from ai.core.meta_calibrator import (
+    build_meta_feature_payload,
+    predict_meta_calibration,
 )
 from ai.core.retriever import Retriever
 from ai.core.llm_client import LLMClient
@@ -31,6 +38,7 @@ from ai.agents.supervisor_agent import combine_multi_agent_estimations
 
 class Estimation(TypedDict, total=False):
     estimated_hours: Optional[float]
+    estimated_hours_raw: Optional[float]
     min_hours: Optional[float]
     max_hours: Optional[float]
     confidence: float
@@ -59,6 +67,11 @@ class Estimation(TypedDict, total=False):
     neighbor_count: int
     supporting_hours: List[float]
     weighted_hours: List[float]
+    range_index: int
+    range_label: str
+    range_min_hours: int
+    range_max_hours: int
+    display_hours: int
 
 
 class CriticReview(TypedDict, total=False):
@@ -91,6 +104,31 @@ class CalibratedEstimation(TypedDict, total=False):
     base_confidence: float
     retrieval_route: str
     retrieval_stats: Dict[str, Any]
+    range_index: int
+    range_label: str
+    range_min_hours: int
+    range_max_hours: int
+    display_hours: int
+    base_range_index: int
+    base_range_label: str
+    base_range_min_hours: int
+    base_range_max_hours: int
+    base_display_hours: int
+    meta_applied: bool
+    meta_hours: float
+    meta_min_hours: float
+    meta_max_hours: float
+    meta_confidence: float
+    meta_source: str
+    meta_prior_source: str
+    meta_prior_count: int
+    meta_blend_weight: float
+    meta_model_version: str
+    meta_range_index: int
+    meta_range_label: str
+    meta_range_min_hours: int
+    meta_range_max_hours: int
+    meta_display_hours: int
     should_split: bool
     split_reason: str
     evidence: List[str]
@@ -131,8 +169,10 @@ def _optional_float(value: Any) -> Optional[float]:
 
 
 def normalize_estimation(res: Dict[str, Any], *, fallback_mode: str) -> Estimation:
+    estimated_hours = _optional_float(res.get("estimated_hours"))
     out: Estimation = {
-        "estimated_hours": _optional_float(res.get("estimated_hours")),
+        "estimated_hours": estimated_hours,
+        "estimated_hours_raw": _optional_float(res.get("estimated_hours_raw", estimated_hours)),
         "min_hours": _optional_float(res.get("min_hours", res.get("estimated_hours"))),
         "max_hours": _optional_float(res.get("max_hours", res.get("estimated_hours"))),
         "confidence": max(0.0, min(1.0, float(res.get("confidence", 0.5) or 0.5))),
@@ -162,10 +202,18 @@ def normalize_estimation(res: Dict[str, Any], *, fallback_mode: str) -> Estimati
         "neighbor_count",
         "supporting_hours",
         "weighted_hours",
+        "range_index",
+        "range_label",
+        "range_min_hours",
+        "range_max_hours",
+        "display_hours",
     )
     for key in passthrough_keys:
         if key in res:
             out[key] = res.get(key)
+    if estimated_hours is not None:
+        for key, value in hours_to_range_payload(estimated_hours).items():
+            out.setdefault(key, value)
     if "token_usage" in res:
         out["token_usage"] = coerce_token_usage(res.get("token_usage"))
     return out
@@ -185,6 +233,163 @@ def normalize_critic(res: Dict[str, Any]) -> CriticReview:
     if "token_usage" in res:
         out["token_usage"] = coerce_token_usage(res.get("token_usage"))
     return out
+
+
+LARGE_SCOPE_TERMS = (
+    "integration",
+    "integracao",
+    "migration",
+    "migracao",
+    "certificate",
+    "certificado",
+    "deploy",
+    "pipeline",
+    "ci/cd",
+    "compatibility",
+    "compatibilidade",
+    "sdk",
+    "oauth",
+    "auth",
+    "autentic",
+    "multi",
+    "multiple",
+    "environments",
+    "ambientes",
+    "version",
+    "versao",
+    "rollback",
+    "refactor",
+    "refator",
+)
+
+DISCOVERY_FIX_TERMS = (
+    "investigate",
+    "investig",
+    "analyze",
+    "analise",
+    "debug",
+    "diagnost",
+    "root cause",
+    "causa raiz",
+    "fix",
+    "corrig",
+    "validate",
+    "valid",
+    "regression",
+    "regress",
+)
+
+
+def _issue_text(issue: Dict[str, Any]) -> str:
+    labels = issue.get("labels") or []
+    if isinstance(labels, list):
+        labels_text = " ".join(str(label or "") for label in labels)
+    else:
+        labels_text = str(labels or "")
+    return " ".join(
+        [
+            str(issue.get("title") or ""),
+            str(issue.get("description") or ""),
+            labels_text,
+        ]
+    ).lower()
+
+
+def _count_terms(text: str, terms: tuple[str, ...]) -> int:
+    return sum(1 for term in terms if term in text)
+
+
+def _candidate_range_index(candidate: Dict[str, Any] | None, fallback_bucket_rank: int = 3) -> int:
+    candidate = dict(candidate or {})
+    if candidate.get("range_index") not in (None, ""):
+        return clamp_range_index(candidate.get("range_index"))
+    estimated_hours = _optional_float(candidate.get("estimated_hours"))
+    if estimated_hours is not None:
+        return hours_to_range_index(estimated_hours)
+    bucket_rank = candidate.get("bucket_rank")
+    if bucket_rank in (None, ""):
+        size_bucket = str(candidate.get("size_bucket") or "").strip().upper()
+        bucket_rank = {
+            "XS": 1,
+            "S": 2,
+            "M": 3,
+            "L": 4,
+            "XL": 5,
+            "XXL": 6,
+        }.get(size_bucket, fallback_bucket_rank)
+    return bucket_rank_to_default_range_index(bucket_rank or fallback_bucket_rank)
+
+
+def _blend_range_indices(primary_index: Any, secondary_index: Any, primary_weight: float) -> int:
+    primary = clamp_range_index(primary_index)
+    secondary = clamp_range_index(secondary_index)
+    weight = max(0.0, min(1.0, float(primary_weight)))
+    blended = (primary * weight) + (secondary * (1.0 - weight))
+    return clamp_range_index(round(blended))
+
+
+def _large_issue_floor_index(
+    issue: Dict[str, Any],
+    analogical: Dict[str, Any],
+    heuristic_candidates: List[Estimation],
+    complexity_review: Dict[str, Any],
+    agile_guard_review: Dict[str, Any],
+) -> int:
+    floor_index = 1
+    text = _issue_text(issue)
+    large_scope_hits = _count_terms(text, LARGE_SCOPE_TERMS)
+    discovery_hits = _count_terms(text, DISCOVERY_FIX_TERMS)
+
+    fit_status = str(agile_guard_review.get("fit_status") or "").strip().lower()
+    agile_confidence = float(agile_guard_review.get("confidence") or 0.0)
+    if fit_status == "oversized" or bool(agile_guard_review.get("should_split")):
+        floor_index = max(floor_index, 8)
+    elif fit_status == "borderline" and agile_confidence >= 0.75:
+        floor_index = max(floor_index, 6)
+
+    complexity_risk = float(complexity_review.get("risk_hidden_complexity") or 0.0)
+    if bool(complexity_review.get("should_split")):
+        floor_index = max(floor_index, 8)
+    elif int(complexity_review.get("bucket_delta") or 0) > 0 and complexity_risk >= 0.82:
+        floor_index = max(floor_index, 6)
+
+    analogical_range_index = _candidate_range_index(analogical, fallback_bucket_rank=3)
+    retrieval_stats = dict(analogical.get("retrieval_stats") or {})
+    top1_score = float(retrieval_stats.get("top1_score") or 0.0)
+    useful_count = int(retrieval_stats.get("useful_count") or 0)
+    supporting_hours = list(analogical.get("supporting_hours") or [])
+    large_neighbor_count = sum(1 for hour in supporting_hours if hours_to_range_index(hour) >= 8)
+    mid_large_neighbor_count = sum(1 for hour in supporting_hours if hours_to_range_index(hour) >= 7)
+
+    if large_neighbor_count >= 2 and (top1_score >= 0.68 or useful_count >= 1):
+        floor_index = max(floor_index, max(7, analogical_range_index - 1))
+    elif mid_large_neighbor_count >= 2 and (top1_score >= 0.64 or useful_count >= 1):
+        floor_index = max(floor_index, min(analogical_range_index, 7))
+
+    heuristic_large_votes = sum(
+        1 for candidate in heuristic_candidates or []
+        if _candidate_range_index(candidate, fallback_bucket_rank=3) >= 7
+    )
+    if heuristic_large_votes >= 2 and (large_scope_hits + discovery_hits) >= 2:
+        floor_index = max(floor_index, 6)
+
+    if large_scope_hits >= 3 and discovery_hits >= 1:
+        floor_index = max(floor_index, 6)
+    if large_scope_hits >= 4:
+        floor_index = max(floor_index, 7)
+
+    # [B1.2] Quando analogical é primary com strong anchor, o floor não pode subir
+    # acima de analogical_range_index + 1. Texto com keywords (LARGE_SCOPE_TERMS)
+    # não deve sobrescrever um match com top1 ~0.99. Isso evitava que, para uma
+    # issue de 2h corretamente estimada pelo analogical, palavras como "auth" ou
+    # "version" no texto disparassem o floor em 7 (18-21h).
+    route = str(analogical.get("retrieval_route") or "")
+    retrieval_stats = analogical.get("retrieval_stats") or {}
+    has_strong_anchor = bool(retrieval_stats.get("has_strong_anchor"))
+    if route == "analogical_primary" and has_strong_anchor:
+        floor_index = min(floor_index, analogical_range_index + 1)
+
+    return clamp_range_index(floor_index)
 
 
 def model_from_finalization(
@@ -384,17 +589,22 @@ def _enrich_heuristic_candidates(
 ) -> List[Estimation]:
     enriched: List[Estimation] = []
     for candidate in candidates or []:
-        rank = candidate.get("bucket_rank")
-        if rank in (None, ""):
-            rank = 3
-        calibrated = calibrate_bucket_rank_to_hours(rank, profile, calibration_mode=calibration_mode)
         merged = dict(candidate)
-        merged.setdefault("size_bucket", calibrated.get("size_bucket"))
-        merged.setdefault("bucket_rank", calibrated.get("bucket_rank"))
-        merged["estimated_hours"] = calibrated.get("estimated_hours")
-        merged["min_hours"] = calibrated.get("min_hours")
-        merged["max_hours"] = calibrated.get("max_hours")
-        merged["calibration_source"] = calibrated.get("calibration_source")
+        range_index = _candidate_range_index(merged, fallback_bucket_rank=3)
+        range_payload = range_index_to_payload(range_index)
+        bucket_rank = range_index_to_bucket_rank(range_index)
+        merged["range_index"] = range_payload["range_index"]
+        merged["range_label"] = range_payload["range_label"]
+        merged["range_min_hours"] = range_payload["range_min_hours"]
+        merged["range_max_hours"] = range_payload["range_max_hours"]
+        merged["display_hours"] = range_payload["display_hours"]
+        merged["estimated_hours"] = float(range_payload["display_hours"])
+        merged["estimated_hours_raw"] = float(range_payload["display_hours"])
+        merged["min_hours"] = float(range_payload["range_min_hours"])
+        merged["max_hours"] = float(range_payload["range_max_hours"])
+        merged["bucket_rank"] = bucket_rank
+        merged["size_bucket"] = rank_to_bucket(bucket_rank)
+        merged["calibration_source"] = "heuristic_range_vote"
         enriched.append(merged)
     return enriched
 
@@ -416,26 +626,39 @@ def calibration_node(state: EstimationState) -> EstimationState:
     )
     analogical_hours = _optional_float(analogical.get("estimated_hours"))
     analogical_conf = float(analogical.get("confidence", 0.0) or 0.0)
-    analogical_rank = analogical.get("bucket_rank")
-    if analogical_rank in (None, "") and analogical_hours is not None:
-        analogical_rank = infer_bucket_rank_from_hours(
-            analogical_hours,
-            hours_pool=profile.get("selected_hours") or profile.get("all_hours"),
-        )
+    analogical_available = bool(analogical) and (
+        analogical.get("range_index") not in (None, "")
+        or analogical_hours is not None
+    )
+    analogical_range_index = _candidate_range_index(
+        analogical,
+        fallback_bucket_rank=analogical.get("bucket_rank") or 3,
+    )
+    analogical_rank = range_index_to_bucket_rank(analogical_range_index)
 
     route = str(analogical.get("retrieval_route") or "analogical_weak")
-    heuristic_consensus = aggregate_bucket_consensus(heuristic_candidates)
     heuristic_calibration_mode = "weak_prior" if route in {"analogical_weak", "analogical_soft_signal"} else "standard"
     heuristic_candidates = _enrich_heuristic_candidates(
         heuristic_candidates,
         profile,
         calibration_mode=heuristic_calibration_mode,
     )
-    heuristic_calibration = calibrate_bucket_rank_to_hours(
-        heuristic_consensus.get("bucket_rank"),
-        profile,
-        calibration_mode=heuristic_calibration_mode,
-    )
+    heuristic_consensus = aggregate_range_consensus(heuristic_candidates)
+    heuristic_calibration = {
+        "size_bucket": heuristic_consensus.get("size_bucket"),
+        "bucket_rank": heuristic_consensus.get("bucket_rank"),
+        "estimated_hours": float(heuristic_consensus.get("display_hours") or 9.0),
+        "estimated_hours_raw": float(heuristic_consensus.get("display_hours") or 9.0),
+        "min_hours": float(heuristic_consensus.get("range_min_hours") or 9.0),
+        "max_hours": float(heuristic_consensus.get("range_max_hours") or 12.0),
+        "calibration_source": "heuristic_range_consensus",
+        "range_index": heuristic_consensus.get("range_index"),
+        "range_label": heuristic_consensus.get("range_label"),
+        "range_min_hours": heuristic_consensus.get("range_min_hours"),
+        "range_max_hours": heuristic_consensus.get("range_max_hours"),
+        "display_hours": heuristic_consensus.get("display_hours"),
+    }
+    heuristic_range_index = clamp_range_index(heuristic_consensus.get("range_index") or 4)
 
     retrieval_stats = dict(analogical.get("retrieval_stats") or {})
     top1_score = float(retrieval_stats.get("top1_score") or 0.0)
@@ -443,7 +666,7 @@ def calibration_node(state: EstimationState) -> EstimationState:
     anchor_overlap = float(retrieval_stats.get("anchor_overlap") or 0.0)
     analogical_rank_value = clamp_bucket_rank(analogical_rank or 3)
     heuristic_rank_value = clamp_bucket_rank(heuristic_consensus.get("bucket_rank") or 3)
-    bucket_gap = analogical_rank_value - heuristic_rank_value
+    range_gap = analogical_range_index - heuristic_range_index
     moderate_analogical_signal = (
         route == "analogical_soft_signal"
         or top1_score >= 0.64
@@ -452,43 +675,36 @@ def calibration_node(state: EstimationState) -> EstimationState:
         or (anchor_overlap >= 0.18 and top1_score >= 0.58)
     )
 
-    if route == "analogical_primary" and analogical_hours is not None:
-        base_hours = float(analogical_hours)
-        base_min = _optional_float(analogical.get("min_hours")) or max(1.0, base_hours * 0.82)
-        base_max = _optional_float(analogical.get("max_hours")) or max(base_hours, base_hours * 1.18)
-        base_rank = clamp_bucket_rank(analogical_rank or heuristic_consensus.get("bucket_rank") or 3)
+    if route == "analogical_primary" and analogical_available:
+        base_range_index = analogical_range_index
         finalization_mode = "analogical_calibrated"
         dominant_strategy = "analogical_consensus"
         selected_model = "analogical_calibrated"
-        calibration_source = str(analogical.get("calibration_source") or "analogical_neighbors")
+        calibration_source = str(analogical.get("calibration_source") or "analogical_range_neighbors")
         base_confidence = max(analogical_conf, 0.62)
-    elif route == "analogical_support" and analogical_hours is not None:
-        heuristic_hours = float(heuristic_calibration.get("estimated_hours") or analogical_hours)
+    elif route == "analogical_support" and analogical_available:
         analogical_weight = 0.65 if analogical_conf >= float(heuristic_consensus.get("confidence", 0.0) or 0.0) else 0.55
-        base_hours = round((analogical_hours * analogical_weight) + (heuristic_hours * (1.0 - analogical_weight)), 1)
-        base_min = min(
-            _optional_float(analogical.get("min_hours")) or analogical_hours,
-            float(heuristic_calibration.get("min_hours") or heuristic_hours),
+        base_range_index = _blend_range_indices(
+            analogical_range_index,
+            heuristic_range_index,
+            analogical_weight,
         )
-        base_max = max(
-            _optional_float(analogical.get("max_hours")) or analogical_hours,
-            float(heuristic_calibration.get("max_hours") or heuristic_hours),
-        )
-        weighted_rank = round(
-            (clamp_bucket_rank(analogical_rank or 3) * analogical_weight)
-            + (clamp_bucket_rank(heuristic_consensus.get("bucket_rank")) * (1.0 - analogical_weight))
-        )
-        base_rank = clamp_bucket_rank(weighted_rank)
         finalization_mode = "hybrid_calibrated"
         dominant_strategy = "analogical_consensus"
         selected_model = "hybrid_calibrated"
         calibration_source = (
-            f"{analogical.get('calibration_source') or 'analogical_neighbors'}"
-            f"+{heuristic_calibration.get('calibration_source') or 'heuristic_calibration'}"
+            f"{analogical.get('calibration_source') or 'analogical_range_neighbors'}"
+            f"+{heuristic_calibration.get('calibration_source') or 'heuristic_range_consensus'}"
         )
-        base_confidence = max(0.52, min(0.82, (analogical_conf * analogical_weight) + (float(heuristic_consensus.get("confidence", 0.4)) * (1.0 - analogical_weight))))
-    elif route in {"analogical_weak", "analogical_soft_signal"} and analogical_hours is not None and moderate_analogical_signal:
-        heuristic_hours = float(heuristic_calibration.get("estimated_hours") or analogical_hours)
+        base_confidence = max(
+            0.52,
+            min(
+                0.82,
+                (analogical_conf * analogical_weight)
+                + (float(heuristic_consensus.get("confidence", 0.4)) * (1.0 - analogical_weight)),
+            ),
+        )
+    elif route in {"analogical_weak", "analogical_soft_signal"} and analogical_available and moderate_analogical_signal:
         analogical_weight = 0.32
         if top1_score >= 0.72:
             analogical_weight = 0.48
@@ -496,32 +712,23 @@ def calibration_node(state: EstimationState) -> EstimationState:
             analogical_weight = 0.42
         elif useful_count >= 1:
             analogical_weight = 0.38
-        if bucket_gap >= 2:
+        if range_gap >= 3:
             analogical_weight += 0.10
         if analogical_conf >= 0.75:
             analogical_weight += 0.05
         analogical_weight = max(0.28, min(0.58, analogical_weight))
 
-        base_hours = round((analogical_hours * analogical_weight) + (heuristic_hours * (1.0 - analogical_weight)), 1)
-        base_min = min(
-            _optional_float(analogical.get("min_hours")) or analogical_hours,
-            float(heuristic_calibration.get("min_hours") or heuristic_hours),
+        base_range_index = _blend_range_indices(
+            analogical_range_index,
+            heuristic_range_index,
+            analogical_weight,
         )
-        base_max = max(
-            _optional_float(analogical.get("max_hours")) or analogical_hours,
-            float(heuristic_calibration.get("max_hours") or heuristic_hours),
-        )
-        weighted_rank = round(
-            (analogical_rank_value * analogical_weight)
-            + (heuristic_rank_value * (1.0 - analogical_weight))
-        )
-        base_rank = clamp_bucket_rank(weighted_rank)
         finalization_mode = "soft_hybrid_calibrated"
         dominant_strategy = "analogical_consensus"
         selected_model = "soft_hybrid_calibrated"
         calibration_source = (
-            f"{analogical.get('calibration_source') or 'analogical_neighbors'}"
-            f"+{heuristic_calibration.get('calibration_source') or 'weak_prior'}"
+            f"{analogical.get('calibration_source') or 'analogical_range_neighbors'}"
+            f"+{heuristic_calibration.get('calibration_source') or 'heuristic_range_consensus'}"
         )
         base_confidence = max(
             0.46,
@@ -532,70 +739,190 @@ def calibration_node(state: EstimationState) -> EstimationState:
             ),
         )
     else:
-        base_hours = float(heuristic_calibration.get("estimated_hours") or profile.get("median_hours") or 8.0)
-        base_min = float(heuristic_calibration.get("min_hours") or max(1.0, base_hours * 0.78))
-        base_max = float(heuristic_calibration.get("max_hours") or max(base_hours, base_hours * 1.22))
-        base_rank = clamp_bucket_rank(heuristic_consensus.get("bucket_rank") or 3)
+        base_range_index = heuristic_range_index
         finalization_mode = "heuristic_bucket_calibrated"
         dominant_strategy = "multiagent_heuristic_consensus"
         selected_model = "heuristic_bucket_calibrated"
-        calibration_source = str(heuristic_calibration.get("calibration_source") or "heuristic_calibration")
+        calibration_source = str(heuristic_calibration.get("calibration_source") or "heuristic_range_consensus")
         base_confidence = max(0.35, float(heuristic_consensus.get("confidence", 0.35) or 0.35))
 
-    agile_delta = int(agile_guard_review.get("bucket_delta") or 0)
-    if agile_delta:
-        agile_rank = clamp_bucket_rank(base_rank + agile_delta)
-        agile_hint = calibrate_bucket_rank_to_hours(
-            agile_rank,
-            profile,
-            calibration_mode=heuristic_calibration_mode,
-        )
-        base_hours = round((base_hours * 0.8) + (float(agile_hint.get("estimated_hours") or base_hours) * 0.2), 1)
-        base_min = min(base_min, float(agile_hint.get("min_hours") or base_min))
-        base_max = max(base_max, float(agile_hint.get("max_hours") or base_max))
-        base_rank = agile_rank
+    base_range_index = clamp_range_index(base_range_index)
+    base_range = range_index_to_payload(base_range_index)
+    base_hours = float(base_range["display_hours"])
+    base_rank = range_index_to_bucket_rank(base_range_index)
 
-    adjustments = bounded_adjustment_from_reviews(
-        base_hours=base_hours,
-        complexity_review=complexity_review,
-        critic_review=critic_review,
+    meta_prediction = predict_meta_calibration(
+        build_meta_feature_payload(
+            issue_context=issue,
+            analogical=analogical,
+            heuristic_consensus=heuristic_consensus,
+            heuristic_calibration=heuristic_calibration,
+            calibration_source=calibration_source,
+            retrieval_route=route,
+            retrieval_stats=retrieval_stats,
+            base_hours=base_hours,
+            base_confidence=base_confidence,
+            rule_selected_model=selected_model,
+            complexity_review=complexity_review,
+            agile_guard_review=agile_guard_review,
+            rag_stats=state.get("rag_stats"),
+        )
     )
-    adjusted_hours = float(adjustments.get("adjusted_hours") or base_hours)
-    adjustment_delta = float(adjustments.get("adjustment_delta") or 0.0)
-    final_rank = infer_bucket_rank_from_hours(
-        adjusted_hours,
-        hours_pool=profile.get("selected_hours") or profile.get("all_hours"),
+    meta_applied = False
+    meta_weight = 0.0
+    if bool(meta_prediction.get("available")):
+        meta_hours = float(meta_prediction.get("estimated_hours") or base_hours)
+        meta_conf = float(meta_prediction.get("confidence") or 0.0)
+        # [META_V4] Pesos aumentados porque o meta agora opera direto em
+        # range_index (unidade = 3h). Antes, o meta produzia deltas médios de
+        # 0.3h que morriam na quantização mesmo com peso alto; agora cada
+        # delta unitário do meta muda uma faixa inteira no output final, então
+        # o peso precisa refletir a verdadeira autoridade que damos a ele.
+        #
+        # Regime fraco (analogical_weak/soft_signal): pesos maiores porque o
+        # resto do pipeline tem pouca evidência e o histórico é nossa melhor
+        # fonte de correção. Regime forte (analogical_primary): pesos baixos
+        # preservando a supremacia do match analógico top1>=0.90.
+        min_meta_weight = 0.08
+        max_meta_weight = 0.20
+        if route == "analogical_primary":
+            meta_weight = 0.10
+            min_meta_weight = 0.08
+            max_meta_weight = 0.18
+        elif route == "analogical_support":
+            meta_weight = 0.22
+            min_meta_weight = 0.18
+            max_meta_weight = 0.28
+        elif route == "analogical_soft_signal":
+            meta_weight = 0.40
+            min_meta_weight = 0.30
+            max_meta_weight = 0.50
+        else:
+            # analogical_weak — máxima autoridade para o meta.
+            meta_weight = 0.45
+            min_meta_weight = 0.35
+            max_meta_weight = 0.55
+
+        prior_source = str(meta_prediction.get("prior_source") or "")
+        prior_count = int(meta_prediction.get("prior_count") or 0)
+        if prior_source == "project":
+            meta_weight -= 0.05
+        elif prior_source == "project_issue":
+            meta_weight += 0.01
+        elif prior_source in {"project_issue_route", "project_issue_route_bucket"}:
+            meta_weight += 0.02
+        elif prior_source == "project_issue_bucket":
+            meta_weight += 0.01
+        if prior_count >= 8:
+            meta_weight += 0.02
+        elif prior_count < 5:
+            meta_weight -= 0.05
+        if meta_conf < 0.5:
+            meta_weight -= 0.04
+        if route == "analogical_support" and top1_score >= 0.78:
+            meta_weight -= 0.03
+        meta_weight = max(min_meta_weight, min(max_meta_weight, meta_weight))
+
+        meta_range_index = clamp_range_index(
+            meta_prediction.get("range_index") or hours_to_range_index(meta_hours)
+        )
+        base_range_index = _blend_range_indices(meta_range_index, base_range_index, meta_weight)
+        base_range = range_index_to_payload(base_range_index)
+        base_hours = float(base_range["display_hours"])
+        base_rank = range_index_to_bucket_rank(base_range_index)
+        base_confidence = max(
+            0.32,
+            min(0.86, (base_confidence * (1.0 - (meta_weight * 0.55))) + (meta_conf * (meta_weight * 0.55))),
+        )
+        calibration_source = f"{calibration_source}+{meta_prediction.get('meta_source') or 'meta_linear'}"
+        meta_applied = meta_weight >= 0.08
+
+    # [B1.1] Detecta quando analogical é forte (primary + strong anchor).
+    # Nesse regime, os agentes de revisão (agile_guard, complexity, critic) não
+    # devem sobrescrever a estimativa. Eles foram projetados como rede de segurança
+    # para quando o analogical é fraco; ao disparar em analogical forte, eles
+    # inflam estimativas corretas (visto em issues 159410 e 159782 do confserver).
+    strong_analogical = (
+        route == "analogical_primary"
+        and bool(retrieval_stats.get("has_strong_anchor"))
     )
-    final_bucket = rank_to_bucket(final_rank)
+
+    agile_delta = int(agile_guard_review.get("bucket_delta") or 0)
+    # [B1.1a] Ignorar inflação do agile_guard quando analogical é forte.
+    # agile_delta negativo (pra baixo) ainda é permitido — analogical pode estar alto demais.
+    if strong_analogical and agile_delta > 0:
+        agile_delta = 0
+    if agile_delta:
+        base_range_index = clamp_range_index(base_range_index + agile_delta)
+        base_range = range_index_to_payload(base_range_index)
+        base_hours = float(base_range["display_hours"])
+        base_rank = range_index_to_bucket_rank(base_range_index)
+
+    range_adjustment = 0
+    complexity_delta = int(complexity_review.get("bucket_delta") or 0)
+    complexity_conf = float(complexity_review.get("confidence") or 0.0)
+    complexity_risk = float(complexity_review.get("risk_hidden_complexity") or 0.0)
+    # [B1.1b] Complexity review só eleva a estimativa se analogical NÃO é forte.
+    if (
+        complexity_delta > 0
+        and complexity_risk >= 0.78
+        and complexity_conf >= 0.74
+        and not strong_analogical
+    ):
+        range_adjustment += min(2, complexity_delta)
 
     critic_under = float(critic_review.get("risk_of_underestimation", 0.0) or 0.0)
     critic_over = float(critic_review.get("risk_of_overestimation", 0.0) or 0.0)
-    min_hours = max(1.0, min(base_min, adjusted_hours * (0.88 - (critic_over * 0.08))))
-    max_hours = max(base_max, adjusted_hours * (1.14 + (critic_under * 0.18)))
+    # [B1.1c] Critic não sobrescreve analogical forte. O crítico estava votando
+    # risk_underestimation=0.80 porque heurístico discordava do analogical, mesmo
+    # com top1=0.99. Discordância entre signals não é evidência real de viés
+    # quando o analogical tem strong anchor.
+    if not strong_analogical:
+        if critic_under - critic_over >= 0.42:
+            range_adjustment += 1
+        elif critic_over - critic_under >= 0.55:
+            range_adjustment -= 1
+
+    large_issue_floor = _large_issue_floor_index(
+        issue=issue,
+        analogical=analogical,
+        heuristic_candidates=heuristic_candidates,
+        complexity_review=complexity_review,
+        agile_guard_review=agile_guard_review,
+    )
+    final_range_index = clamp_range_index(base_range_index + range_adjustment)
+    final_range_index = max(final_range_index, large_issue_floor)
+    final_range = range_index_to_payload(final_range_index)
+    adjusted_hours = float(final_range["display_hours"])
+    adjustment_delta = round(adjusted_hours - base_hours, 1)
+    final_rank = range_index_to_bucket_rank(final_range_index)
+    final_bucket = rank_to_bucket(final_rank)
 
     should_split = (
         bool(agile_guard_review.get("should_split"))
         or bool(complexity_review.get("should_split"))
         or str(agile_guard_review.get("fit_status") or "") == "oversized"
-        or adjusted_hours > 40.0
+        or final_range_index >= 10
     )
     split_reason = (
         agile_guard_review.get("split_reason")
         or complexity_review.get("split_reason")
     )
+    if should_split and not split_reason and final_range_index >= 10:
+        split_reason = "Final range indicates a large backlog item and likely refinement or split."
 
     calibrated: CalibratedEstimation = {
         "size_bucket": final_bucket,
         "bucket_rank": final_rank,
         "heuristic_size_bucket": str(heuristic_consensus.get("size_bucket") or "M"),
         "heuristic_bucket_rank": clamp_bucket_rank(heuristic_consensus.get("bucket_rank") or 3),
-        "analogical_size_bucket": str(analogical.get("size_bucket") or rank_to_bucket(analogical_rank or 3)),
-        "analogical_bucket_rank": clamp_bucket_rank(analogical_rank or 3),
-        "base_hours": round(base_hours, 1),
+        "analogical_size_bucket": str(analogical.get("size_bucket") or rank_to_bucket(analogical_rank)),
+        "analogical_bucket_rank": clamp_bucket_rank(analogical_rank),
+        "base_hours": round(float(base_range["display_hours"]), 1),
         "adjusted_hours": round(adjusted_hours, 1),
         "adjustment_delta": round(adjustment_delta, 1),
-        "min_hours": round(min_hours, 1),
-        "max_hours": round(max_hours, 1),
+        "min_hours": final_range["range_min_hours"],
+        "max_hours": final_range["range_max_hours"],
         "calibration_source": calibration_source,
         "finalization_mode": finalization_mode,
         "dominant_strategy": dominant_strategy,
@@ -603,13 +930,41 @@ def calibration_node(state: EstimationState) -> EstimationState:
         "base_confidence": round(base_confidence, 4),
         "retrieval_route": route,
         "retrieval_stats": dict(analogical.get("retrieval_stats") or {}),
+        "range_index": final_range["range_index"],
+        "range_label": final_range["range_label"],
+        "range_min_hours": final_range["range_min_hours"],
+        "range_max_hours": final_range["range_max_hours"],
+        "display_hours": final_range["display_hours"],
+        "base_range_index": base_range["range_index"],
+        "base_range_label": base_range["range_label"],
+        "base_range_min_hours": base_range["range_min_hours"],
+        "base_range_max_hours": base_range["range_max_hours"],
+        "base_display_hours": base_range["display_hours"],
+        "meta_applied": bool(meta_applied),
+        "meta_hours": round(float(meta_prediction.get("estimated_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_min_hours": round(float(meta_prediction.get("min_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_max_hours": round(float(meta_prediction.get("max_hours") or 0.0), 1) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_confidence": round(float(meta_prediction.get("confidence") or 0.0), 4) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_source": str(meta_prediction.get("meta_source") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_prior_source": str(meta_prediction.get("prior_source") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_prior_count": int(meta_prediction.get("prior_count") or 0) if bool(meta_prediction.get("available")) else 0,
+        "meta_blend_weight": round(float(meta_weight), 4) if bool(meta_prediction.get("available")) else 0.0,
+        "meta_model_version": str(meta_prediction.get("model_version") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_range_index": int(meta_prediction.get("range_index") or 0) if bool(meta_prediction.get("available")) else 0,
+        "meta_range_label": str(meta_prediction.get("range_label") or "") if bool(meta_prediction.get("available")) else "",
+        "meta_range_min_hours": int(meta_prediction.get("range_min_hours") or 0) if bool(meta_prediction.get("available")) else 0,
+        "meta_range_max_hours": int(meta_prediction.get("range_max_hours") or 0) if bool(meta_prediction.get("available")) else 0,
+        "meta_display_hours": int(meta_prediction.get("display_hours") or 0) if bool(meta_prediction.get("available")) else 0,
         "should_split": should_split,
         "split_reason": split_reason,
         "evidence": [
-            f"base_hours={round(base_hours, 1)}",
+            f"base_range={base_range['range_label']}",
             f"adjusted_hours={round(adjusted_hours, 1)}",
+            f"range={final_range['range_label']}",
             f"heuristic_bucket={heuristic_consensus.get('size_bucket')}",
             f"analogical_route={route}",
+            f"large_issue_floor={range_index_to_payload(large_issue_floor)['range_label']}",
+            f"meta_applied={str(meta_applied).lower()}",
         ],
     }
 

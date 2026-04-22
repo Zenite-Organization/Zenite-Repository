@@ -41,7 +41,12 @@ class TestRunIssueEstimationUseCase(unittest.TestCase):
     def test_removes_estimate_label_best_effort_success(self):
         use_case = RunIssueEstimationUseCase(
             estimation_service=_FakeEstimationService(
-                {"estimated_hours": 5, "confidence": 0.8, "justification": "ok"}
+                {
+                    "estimated_hours": 5,
+                    "confidence": 0.8,
+                    "justification": "ok",
+                    "user_justification": "mensagem amigavel",
+                }
             )
         )
 
@@ -61,6 +66,9 @@ class TestRunIssueEstimationUseCase(unittest.TestCase):
             self.assertTrue(result["estimate_label_removed"])
             self.assertIsNone(result["estimate_label_remove_reason"])
             self.assertIsNone(result["estimate_label_remove_error"])
+            provider.add_comment.assert_awaited_once()
+            comment_text = provider.add_comment.await_args.args[1]
+            self.assertIn("mensagem amigavel", comment_text)
 
             provider.remove_issue_label.assert_awaited_once_with(
                 repo_full_name="org/repo",

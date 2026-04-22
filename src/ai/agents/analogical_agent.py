@@ -2,7 +2,7 @@ from typing import Dict, Any, List
 import json
 import re
 
-from ai.core.effort_calibration import weighted_neighbor_estimate
+from ai.core.effort_calibration import weighted_neighbor_range_estimate
 from ai.core.llm_client import LLMClient
 from ai.core.json_utils import parse_llm_json_response
 from ai.core.prompt_utils import build_system_prompt
@@ -217,7 +217,7 @@ def run_analogical(
 ) -> Dict[str, Any]:
     prepared_similar = _prepare_similar_issues(similar_issues)
     retrieval_stats = _compute_retrieval_stats(issue_context, prepared_similar)
-    deterministic_result = weighted_neighbor_estimate(
+    deterministic_result = weighted_neighbor_range_estimate(
         issue_context=issue_context,
         similar_issues=prepared_similar,
         useful_score_threshold=USEFUL_SCORE_THRESHOLD,
@@ -232,11 +232,17 @@ def run_analogical(
         "confidence": deterministic_result.get("confidence"),
         "size_bucket": deterministic_result.get("size_bucket"),
         "bucket_rank": deterministic_result.get("bucket_rank"),
+        "range_index": deterministic_result.get("range_index"),
+        "range_label": deterministic_result.get("range_label"),
+        "range_min_hours": deterministic_result.get("range_min_hours"),
+        "range_max_hours": deterministic_result.get("range_max_hours"),
+        "display_hours": deterministic_result.get("display_hours"),
         "base_hours": deterministic_result.get("estimated_hours"),
         "calibration_source": deterministic_result.get("calibration_source"),
         "neighbor_count": deterministic_result.get("neighbor_count"),
         "supporting_hours": deterministic_result.get("supporting_hours"),
         "weighted_hours": deterministic_result.get("weighted_hours"),
+        "supporting_ranges": deterministic_result.get("supporting_ranges"),
         "source": "analogical",
         "retrieval_stats": retrieval_stats,
         "retrieval_route": retrieval_stats.get("route"),

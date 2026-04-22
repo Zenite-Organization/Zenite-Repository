@@ -30,6 +30,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
+from ai.core.effort_calibration import hours_to_range_payload
 from application.services.estimation_service import EstimationService
 
 VALIDATION_TABLE = "issue_estimation_validation"
@@ -58,6 +59,18 @@ VALIDATION_BASE_COLUMNS = [
     "predicted_total_tokens",
 ]
 VALIDATION_DIAGNOSTIC_COLUMNS = {
+    "predicted_hours_raw": "DOUBLE NULL",
+    "predicted_range_label": "VARCHAR(16) NULL",
+    "predicted_range_index": "INT NULL",
+    "predicted_range_min_hours": "INT NULL",
+    "predicted_range_max_hours": "INT NULL",
+    "actual_hours": "DOUBLE NULL",
+    "actual_range_label": "VARCHAR(16) NULL",
+    "actual_range_index": "INT NULL",
+    "actual_range_min_hours": "INT NULL",
+    "actual_range_max_hours": "INT NULL",
+    "range_hit": "TINYINT(1) NULL",
+    "range_distance": "INT NULL",
     "selected_model": "VARCHAR(64) NULL",
     "dominant_strategy": "VARCHAR(64) NULL",
     "finalization_mode": "VARCHAR(64) NULL",
@@ -83,6 +96,16 @@ VALIDATION_DIAGNOSTIC_COLUMNS = {
     "base_hours": "DOUBLE NULL",
     "adjusted_hours": "DOUBLE NULL",
     "adjustment_delta": "DOUBLE NULL",
+    "meta_applied": "TINYINT(1) NULL",
+    "meta_hours": "DOUBLE NULL",
+    "meta_min_hours": "DOUBLE NULL",
+    "meta_max_hours": "DOUBLE NULL",
+    "meta_confidence": "DOUBLE NULL",
+    "meta_source": "VARCHAR(128) NULL",
+    "meta_prior_source": "VARCHAR(64) NULL",
+    "meta_prior_count": "INT NULL",
+    "meta_blend_weight": "DOUBLE NULL",
+    "meta_model_version": "VARCHAR(64) NULL",
     "final_min_hours": "DOUBLE NULL",
     "final_max_hours": "DOUBLE NULL",
     "final_should_split": "TINYINT(1) NULL",
@@ -219,6 +242,11 @@ class ValidationProgress:
         except (TypeError, ValueError):
             return "-"
 
+    @staticmethod
+    def _fmt_range(value: Any) -> str:
+        text_value = str(value or "").strip()
+        return text_value or "-"
+
     def _avg_ms(self) -> int:
         if self.completed <= 0:
             return 0
@@ -238,6 +266,7 @@ class ValidationProgress:
             print(
                 f"[{self.completed}/{self.total}] issue={issue_id} "
                 f"model={model_name} selected={selected_name} "
+                f"range={self._fmt_range(payload.get('predicted_range_label'))} "
                 f"hours={self._fmt_hours(payload.get('predicted_hours'))} "
                 f"ms={service_ms} ok"
             )
@@ -431,6 +460,40 @@ def build_validation_payload(
 
     project_key = str(row.get("project_key") or row["project_id"]).strip().lower()
     predicted_hours = final_estimation.get("estimated_hours")
+    predicted_hours_raw = final_estimation.get("estimated_hours_raw", predicted_hours)
+    predicted_range = {
+        "range_index": maybe_int(final_estimation.get("range_index")),
+        "range_label": maybe_text(final_estimation.get("range_label")),
+        "range_min_hours": maybe_int(final_estimation.get("range_min_hours")),
+        "range_max_hours": maybe_int(final_estimation.get("range_max_hours")),
+    }
+    if not predicted_range["range_label"] and predicted_hours_raw not in (None, ""):
+        normalized_range = hours_to_range_payload(predicted_hours_raw)
+        predicted_range = {
+            "range_index": int(normalized_range["range_index"]),
+            "range_label": str(normalized_range["range_label"]),
+            "range_min_hours": int(normalized_range["range_min_hours"]),
+            "range_max_hours": int(normalized_range["range_max_hours"]),
+        }
+
+    actual_hours = maybe_float(row.get("actual_hours"))
+    actual_range = {"range_index": None, "range_label": None, "range_min_hours": None, "range_max_hours": None}
+    if actual_hours is not None:
+        actual_payload = hours_to_range_payload(actual_hours)
+        actual_range = {
+            "range_index": int(actual_payload["range_index"]),
+            "range_label": str(actual_payload["range_label"]),
+            "range_min_hours": int(actual_payload["range_min_hours"]),
+            "range_max_hours": int(actual_payload["range_max_hours"]),
+        }
+
+    predicted_range_index = predicted_range["range_index"]
+    actual_range_index = actual_range["range_index"]
+    range_hit = None
+    range_distance = None
+    if predicted_range_index is not None and actual_range_index is not None:
+        range_hit = 1 if int(predicted_range_index) == int(actual_range_index) else 0
+        range_distance = abs(int(predicted_range_index) - int(actual_range_index))
 
     decision_trace_json = None
     agent_trace_json = None
@@ -440,6 +503,12 @@ def build_validation_payload(
         decision_trace = {
             "estimation_model": estimation_model,
             "selected_model": selected_model,
+            "user_justification": final_estimation.get("user_justification") or final_estimation.get("justification"),
+            "analysis_justification": final_estimation.get("analysis_justification"),
+            "predicted_range": predicted_range,
+            "actual_range": actual_range,
+            "range_hit": range_hit,
+            "range_distance": range_distance,
             "dominant_strategy": final_estimation.get("dominant_strategy") or calibrated_estimation.get("dominant_strategy"),
             "finalization_mode": final_estimation.get("finalization_mode") or calibrated_estimation.get("finalization_mode"),
             "retrieval_route": retrieval_route,
@@ -468,6 +537,14 @@ def build_validation_payload(
                 "base_hours": maybe_float(calibrated_estimation.get("base_hours")),
                 "adjusted_hours": maybe_float(calibrated_estimation.get("adjusted_hours")),
                 "adjustment_delta": maybe_float(calibrated_estimation.get("adjustment_delta")),
+                "meta_applied": bool(calibrated_estimation.get("meta_applied")),
+                "meta_hours": maybe_float(calibrated_estimation.get("meta_hours")),
+                "meta_confidence": maybe_float(calibrated_estimation.get("meta_confidence")),
+                "meta_source": maybe_text(calibrated_estimation.get("meta_source")),
+                "meta_prior_source": maybe_text(calibrated_estimation.get("meta_prior_source")),
+                "meta_prior_count": maybe_int(calibrated_estimation.get("meta_prior_count")),
+                "meta_blend_weight": maybe_float(calibrated_estimation.get("meta_blend_weight")),
+                "meta_model_version": maybe_text(calibrated_estimation.get("meta_model_version")),
                 "calibration_source": maybe_text(calibrated_estimation.get("calibration_source")),
             },
             "analogical": {
@@ -517,8 +594,20 @@ def build_validation_payload(
         "issue_number": int(row["id"]),
         "repository": project_key,
         "predicted_hours": predicted_hours,
+        "predicted_hours_raw": maybe_float(predicted_hours_raw),
+        "predicted_range_label": predicted_range["range_label"],
+        "predicted_range_index": predicted_range["range_index"],
+        "predicted_range_min_hours": predicted_range["range_min_hours"],
+        "predicted_range_max_hours": predicted_range["range_max_hours"],
+        "actual_hours": actual_hours,
+        "actual_range_label": actual_range["range_label"],
+        "actual_range_index": actual_range["range_index"],
+        "actual_range_min_hours": actual_range["range_min_hours"],
+        "actual_range_max_hours": actual_range["range_max_hours"],
+        "range_hit": range_hit,
+        "range_distance": range_distance,
         "confidence": final_estimation.get("confidence"),
-        "justification": final_estimation.get("justification", ""),
+        "justification": final_estimation.get("user_justification") or final_estimation.get("justification", ""),
         "estimation_model": estimation_model,
         "model_version": model_version,
         "predicted_llm_prompt_tokens": int(usage.get("predicted_llm_prompt_tokens") or 0),
@@ -551,6 +640,16 @@ def build_validation_payload(
         "base_hours": maybe_float(final_estimation.get("base_hours") or calibrated_estimation.get("base_hours")),
         "adjusted_hours": maybe_float(final_estimation.get("adjusted_hours") or calibrated_estimation.get("adjusted_hours")),
         "adjustment_delta": maybe_float(final_estimation.get("adjustment_delta") or calibrated_estimation.get("adjustment_delta")),
+        "meta_applied": maybe_bool_int(calibrated_estimation.get("meta_applied")),
+        "meta_hours": maybe_float(calibrated_estimation.get("meta_hours")),
+        "meta_min_hours": maybe_float(calibrated_estimation.get("meta_min_hours")),
+        "meta_max_hours": maybe_float(calibrated_estimation.get("meta_max_hours")),
+        "meta_confidence": maybe_float(calibrated_estimation.get("meta_confidence")),
+        "meta_source": maybe_text(calibrated_estimation.get("meta_source")),
+        "meta_prior_source": maybe_text(calibrated_estimation.get("meta_prior_source")),
+        "meta_prior_count": maybe_int(calibrated_estimation.get("meta_prior_count")),
+        "meta_blend_weight": maybe_float(calibrated_estimation.get("meta_blend_weight")),
+        "meta_model_version": maybe_text(calibrated_estimation.get("meta_model_version")),
         "final_min_hours": maybe_float(final_estimation.get("min_hours")),
         "final_max_hours": maybe_float(final_estimation.get("max_hours")),
         "final_should_split": maybe_bool_int(final_estimation.get("should_split")),
@@ -651,7 +750,8 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
           title,
           description_text,
           type,
-          assignee_id
+          assignee_id,
+          ROUND((i.total_effort_minutes / 60.0), 4) AS actual_hours
         FROM (
             SELECT
               x.id,
@@ -661,6 +761,7 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
               x.description_text,
               x.type,
               x.assignee_id,
+              x.total_effort_minutes,
               ROW_NUMBER() OVER (
                 PARTITION BY x.project_id
                 ORDER BY x.id ASC
@@ -671,7 +772,7 @@ def fetch_issues_for_validation(engine, project_id: int, limit: int) -> list[dic
                 x.resolution_date IS NOT NULL
                 AND x.status IN ('Closed','Done','Resolved','Complete')
                 AND x.resolution IN ('Fixed','Done','Complete','Completed','Works as Designed')
-                AND cast((x.total_effort_minutes / 60) as SIGNED) BETWEEN 1 AND 40
+                AND (x.total_effort_minutes / 60.0) BETWEEN 1 AND 40
                 AND length(x.description_text) >= 100
                 AND x.project_id = :project_id
         ) i
