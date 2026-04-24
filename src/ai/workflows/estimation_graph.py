@@ -794,14 +794,14 @@ def calibration_node(state: EstimationState) -> EstimationState:
             min_meta_weight = 0.18
             max_meta_weight = 0.28
         elif route == "analogical_soft_signal":
-            meta_weight = 0.40
-            min_meta_weight = 0.30
-            max_meta_weight = 0.50
+            meta_weight = 0.55
+            min_meta_weight = 0.40
+            max_meta_weight = 0.70
         else:
             # analogical_weak — máxima autoridade para o meta.
-            meta_weight = 0.45
-            min_meta_weight = 0.35
-            max_meta_weight = 0.55
+            meta_weight = 0.65
+            min_meta_weight = 0.50
+            max_meta_weight = 0.80
 
         prior_source = str(meta_prediction.get("prior_source") or "")
         prior_count = int(meta_prediction.get("prior_count") or 0)
@@ -909,7 +909,10 @@ def calibration_node(state: EstimationState) -> EstimationState:
         or complexity_review.get("split_reason")
     )
     if should_split and not split_reason and final_range_index >= 10:
-        split_reason = "Final range indicates a large backlog item and likely refinement or split."
+        split_reason = (
+            "A faixa final indica um item grande de backlog, com sinais de que pode "
+            "precisar de refinamento ou divisão."
+        )
 
     calibrated: CalibratedEstimation = {
         "size_bucket": final_bucket,

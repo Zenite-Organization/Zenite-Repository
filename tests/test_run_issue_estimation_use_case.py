@@ -46,6 +46,8 @@ class TestRunIssueEstimationUseCase(unittest.TestCase):
                     "confidence": 0.8,
                     "justification": "ok",
                     "user_justification": "mensagem amigavel",
+                    "should_split": True,
+                    "split_reason": "Issue groups multiple deliverables.",
                 }
             )
         )
@@ -69,6 +71,9 @@ class TestRunIssueEstimationUseCase(unittest.TestCase):
             provider.add_comment.assert_awaited_once()
             comment_text = provider.add_comment.await_args.args[1]
             self.assertIn("mensagem amigavel", comment_text)
+            self.assertIn("A issue agrupa múltiplas entregas.", comment_text)
+            self.assertNotIn("Issue groups multiple deliverables.", comment_text)
+            self.assertNotIn("Modelo:", comment_text)
 
             provider.remove_issue_label.assert_awaited_once_with(
                 repo_full_name="org/repo",

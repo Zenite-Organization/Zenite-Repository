@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional
 
+from ai.core.estimation_localization import normalize_split_reason
+
 
 AGILE_HOURS_LIMIT = 40.0
 
@@ -60,34 +62,34 @@ def _build_justification(
     complexity_review: Optional[Dict[str, Any]],
     agile_guard_review: Optional[Dict[str, Any]],
 ) -> str:
-    finalization_mode = str(calibrated_estimation.get("finalization_mode") or "calibrated")
-    route = str(calibrated_estimation.get("retrieval_route") or "unknown")
+    finalization_mode = str(calibrated_estimation.get("finalization_mode") or "calibrado")
+    route = str(calibrated_estimation.get("retrieval_route") or "desconhecida")
     size_bucket = str(calibrated_estimation.get("size_bucket") or "M")
     range_label = str(calibrated_estimation.get("range_label") or "")
-    calibration_source = str(calibrated_estimation.get("calibration_source") or "unknown")
+    calibration_source = str(calibrated_estimation.get("calibration_source") or "desconhecida")
     adjustment_delta = _safe_float(calibrated_estimation.get("adjustment_delta"), 0.0)
     meta_applied = bool(calibrated_estimation.get("meta_applied"))
     meta_source = str(calibrated_estimation.get("meta_source") or "").strip()
 
     parts = [
-        f"Finalized via {finalization_mode}",
-        f"size bucket {size_bucket}",
-        f"final range {range_label}" if range_label else "final range unknown",
-        f"calibrated from {calibration_source}",
-        f"retrieval route {route}",
+        f"Modo de finalização: {finalization_mode}",
+        f"Faixa de tamanho: {size_bucket}",
+        f"Faixa final: {range_label}" if range_label else "Faixa final: não identificada",
+        f"Calibrada a partir de: {calibration_source}",
+        f"Rota de recuperação: {route}",
     ]
     if meta_applied and meta_source:
-        parts.append(f"meta-calibrated with {meta_source}")
+        parts.append(f"Meta-calibrada com {meta_source}")
     if analogical and analogical.get("estimated_hours") is not None:
-        parts.append(f"analogical base {_safe_float(analogical.get('estimated_hours')):.1f}h")
+        parts.append(f"Base analógica: {_safe_float(analogical.get('estimated_hours')):.1f}h")
     if adjustment_delta > 0.2:
-        parts.append("bounded upward adjustment from hidden technical complexity")
+        parts.append("Ajuste limitado para cima por complexidade técnica oculta")
     elif adjustment_delta < -0.2:
-        parts.append("bounded downward adjustment after review")
+        parts.append("Ajuste limitado para baixo após revisão")
     if (agile_guard_review or {}).get("should_split"):
-        parts.append("agile review recommends split")
+        parts.append("A revisão ágil recomenda quebrar a issue")
     elif (complexity_review or {}).get("should_split"):
-        parts.append("technical review recommends split")
+        parts.append("A revisão técnica recomenda quebrar a issue")
     return "; ".join(parts) + "."
 
 
@@ -188,7 +190,11 @@ def combine_multi_agent_estimations(
         or (complexity_review or {}).get("split_reason")
     )
     if should_split and not split_reason:
-        split_reason = f"Consolidated estimate exceeds the healthy agile limit of {AGILE_HOURS_LIMIT:.0f}h."
+        split_reason = (
+            f"A estimativa consolidada ultrapassa o limite saudável de "
+            f"{AGILE_HOURS_LIMIT:.0f}h para um item ágil."
+        )
+    split_reason = normalize_split_reason(split_reason, AGILE_HOURS_LIMIT)
 
     analysis_justification = _build_justification(
         calibrated_estimation=calibrated,

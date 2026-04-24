@@ -147,7 +147,7 @@ class TestSupervisorHeuristicEnsemble(unittest.TestCase):
             },
         )
         self.assertTrue(out["should_split"])
-        self.assertEqual(out["split_reason"], "Issue groups multiple deliverables.")
+        self.assertEqual(out["split_reason"], "A issue agrupa múltiplas entregas.")
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ Rules:
 - Use 0 in the common case.
 - Use 1 only when the wording strongly suggests aggregate scope, multiple deliverables, or work that likely should be split.
 - Prefer should_split and fit_status over pushing the estimate upward.
+- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{
@@ -79,7 +80,7 @@ Issue:
             "fit_status": "healthy",
             "bucket_delta": 0,
             "confidence": 0.25,
-            "justification": "Fallback from agile guard.",
+            "justification": "Resposta de contingência da análise ágil.",
             "evidence": [],
             "warnings": [str(exc)],
             "assumptions": [],

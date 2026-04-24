@@ -90,6 +90,7 @@ Rules:
 - Do not inflate the range only because the issue looks risky, vague, or mentions an exception.
 - Use uncertainty to reduce confidence first. Only move the range up if the text clearly indicates broader work.
 - If the issue sounds large, prefer expressing that through the range rather than a generic warning.
+- Write every human-readable field in Brazilian Portuguese.
 
 Primary focus for this mode:
 {guidance["role"]}
@@ -173,9 +174,9 @@ def _fallback(mode: str) -> Dict[str, Any]:
         "range_max_hours": range_payload["range_max_hours"],
         "display_hours": range_payload["display_hours"],
         "confidence": 0.25,
-        "justification": f"Fallback applied for heuristic mode {mode}.",
+        "justification": f"Resposta de contingência aplicada ao modo heurístico {mode}.",
         "evidence": [],
-        "warnings": ["Could not parse the model response."],
+        "warnings": ["Não foi possível interpretar a resposta do modelo."],
         "assumptions": [],
     }
 

@@ -61,6 +61,7 @@ Rules for weighing the signals:
 - Heuristic disagreement alone (when analogical is strong) is NOT evidence of underestimation.
   The heuristics cannot see similar historical issues; their votes naturally differ from a
   strong analogical, and that difference should not inflate risk.
+- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{
@@ -84,9 +85,9 @@ Data:
         return {
             "risk_of_underestimation": 0.5,
             "risk_of_overestimation": 0.5,
-            "contradictions": [f"Critic fallback: {exc}"],
+            "contradictions": [f"Resposta de contingência do crítico: {exc}"],
             "hidden_complexities": [],
-            "strongest_signal": "No reliable critic output.",
-            "recommendation": "Keep the calibrated estimate conservative and confidence moderate.",
+            "strongest_signal": "Não houve uma saída confiável do crítico.",
+            "recommendation": "Mantenha a estimativa calibrada de forma conservadora e a confiança em nível moderado.",
             "token_usage": coerce_token_usage(llm.get_last_token_usage()),
         }
