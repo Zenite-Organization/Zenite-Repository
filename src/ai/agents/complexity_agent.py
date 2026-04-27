@@ -30,6 +30,7 @@ Rules:
 - Use 1 only when the issue clearly touches more than one technical surface, such as API plus database, runtime plus build pipeline, auth plus deployment, or investigation plus non-trivial fix.
 - Use 2 only when the text strongly suggests broad technical change and likely split/refinement.
 - Prefer confidence and warnings over inflating the delta.
+- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{
@@ -80,7 +81,7 @@ Issue:
             "bucket_delta": 0,
             "confidence": 0.25,
             "risk_hidden_complexity": 0.0,
-            "justification": "Fallback from complexity review.",
+            "justification": "Resposta de contingência da análise de complexidade.",
             "evidence": [],
             "warnings": [str(exc)],
             "assumptions": [],

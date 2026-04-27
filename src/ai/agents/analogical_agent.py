@@ -183,6 +183,7 @@ You already received a deterministic analogical estimate computed from historica
 
 Do not invent a new point estimate.
 Explain whether the deterministic analogical estimate looks reasonable.
+- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{
@@ -248,7 +249,7 @@ def run_analogical(
         "retrieval_route": retrieval_stats.get("route"),
         "should_split": False,
         "split_reason": None,
-        "justification": "Deterministic analogical estimate from historical neighbors.",
+        "justification": "Estimativa analógica determinística baseada em itens históricos semelhantes.",
         "evidence": [],
         "warnings": [],
         "assumptions": [],
