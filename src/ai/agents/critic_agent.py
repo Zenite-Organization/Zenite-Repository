@@ -61,7 +61,6 @@ Rules for weighing the signals:
 - Heuristic disagreement alone (when analogical is strong) is NOT evidence of underestimation.
   The heuristics cannot see similar historical issues; their votes naturally differ from a
   strong analogical, and that difference should not inflate risk.
-- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{

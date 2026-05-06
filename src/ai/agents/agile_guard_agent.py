@@ -29,7 +29,6 @@ Rules:
 - Use 0 in the common case.
 - Use 1 only when the wording strongly suggests aggregate scope, multiple deliverables, or work that likely should be split.
 - Prefer should_split and fit_status over pushing the estimate upward.
-- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{

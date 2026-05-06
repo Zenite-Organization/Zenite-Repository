@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     META_CALIBRATOR_MODEL_PATH: str = "artifacts/meta_calibrator.json"
     META_CALIBRATOR_MIN_SEGMENT_COUNT: int = 3
     META_CALIBRATOR_MAX_PRIOR_WEIGHT: float = 0.30
+    # Output translator (post-pipeline): translates user-facing strings to the
+    # target locale before showing to the end user. Runs OUTSIDE the LangGraph
+    # pipeline, so the agents themselves keep reasoning in English (their
+    # strongest mode). Fails open: if translation errors, original English is
+    # used. Disable by setting OUTPUT_TRANSLATOR_ENABLED=false in .env.
+    OUTPUT_TRANSLATOR_ENABLED: bool = True
+    OUTPUT_LOCALE: str = "pt-BR"
+    OUTPUT_TRANSLATOR_MODEL: str = "gemini-3-flash-preview"
     # Sprint / planning settings
     WORK_HOURS_PER_DAY: int = 8
     SPRINT_DEFAULT_DAYS: int = 14

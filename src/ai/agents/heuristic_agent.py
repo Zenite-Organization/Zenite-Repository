@@ -90,7 +90,6 @@ Rules:
 - Do not inflate the range only because the issue looks risky, vague, or mentions an exception.
 - Use uncertainty to reduce confidence first. Only move the range up if the text clearly indicates broader work.
 - If the issue sounds large, prefer expressing that through the range rather than a generic warning.
-- Write every human-readable field in Brazilian Portuguese.
 
 Primary focus for this mode:
 {guidance["role"]}

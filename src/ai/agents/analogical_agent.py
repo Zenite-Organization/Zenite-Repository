@@ -183,7 +183,6 @@ You already received a deterministic analogical estimate computed from historica
 
 Do not invent a new point estimate.
 Explain whether the deterministic analogical estimate looks reasonable.
-- Write every human-readable field in Brazilian Portuguese.
 
 Return JSON only:
 {{

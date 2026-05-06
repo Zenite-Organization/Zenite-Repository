@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict
 
 from ai.dtos.issues_estimation_dto import IssueEstimationDTO
-from ai.core.estimation_localization import normalize_split_reason
+from ai.core.output_translator import translate_estimation_output
 from clients.github.github_provider import GitHubProjectProvider
 from domain.webhook_rules import ESTIMATION_LABEL
 from application.services.estimation_service import EstimationService
@@ -21,18 +21,35 @@ class RunIssueEstimationUseCase:
         issue_node_id: str,
     ) -> Dict[str, Any]:
         estimation_state = await self.estimation_service.run(dto)
+
+        # Localize free-text fields (justification, summary, warnings, etc)
+        # to the configured target locale (default pt-BR). This step is
+        # isolated from the estimation logic — the LLM agents continue to
+        # reason in English (their strongest mode), and we translate only
+        # the user-facing strings before posting to GitHub.
+        # Fail-open: if translation breaks for any reason, the original
+        # English output is preserved and the comment is still posted.
+        try:
+            estimation_state = translate_estimation_output(estimation_state)
+        except Exception:
+            logger.warning(
+                "Output translation failed, posting comment in original language",
+                exc_info=True,
+            )
+
         estimation = estimation_state.get("final_estimation", {})
 
         estimate_value = float(estimation.get("estimated_hours", 0) or 0)
         confidence = float(estimation.get("confidence", 0) or 0)
         min_hours = estimation.get("min_hours")
         max_hours = estimation.get("max_hours")
+        model_name = estimation.get("estimation_model", "unknown")
         justification = (
             estimation.get("user_justification")
             or estimation.get("justification", "")
         )
         should_split = bool(estimation.get("should_split", False))
-        split_reason = normalize_split_reason(estimation.get("split_reason"))
+        split_reason = estimation.get("split_reason")
 
         interval_text = ""
         if min_hours is not None and max_hours is not None:
@@ -40,15 +57,13 @@ class RunIssueEstimationUseCase:
 
         split_text = ""
         if should_split:
-            split_text = "⚠️ A issue aparenta precisar de quebra/refinamento."
-            if split_reason:
-                split_text = f"{split_text} {split_reason}"
-            split_text = f"{split_text}\n\n"
+            split_text = f"⚠️ A issue aparenta precisar de quebra/refinamento. {split_reason or ''}\n\n"
 
         estimation_text = (
             f"Estimativa automática: **{estimate_value} horas**.\n\n"
             f"{interval_text}"
             f"Confiança: **{confidence:.2f}**\n\n"
+            f"Modelo: `{model_name}`\n\n"
             f"{split_text}"
             f"Justificativa: {justification}"
         )
